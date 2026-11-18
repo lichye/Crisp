@@ -1,0 +1,21 @@
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_synthesis.cpp b/third_party/hw-cbmc/src/verilog/verilog_synthesis.cpp
+index aff5f07..e0e9eef 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_synthesis.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_synthesis.cpp
+@@ -1297,6 +1297,16 @@ const symbolt &verilog_synthesist::assignment_symbol(const exprt &lhs)
+     {
+       e = &to_typecast_expr(*e).op();
+     }
++    else if(
++      e->id() == ID_index || e->id() == ID_extractbit ||
++      e->id() == ID_extractbits)
++    {
++      // A port bound to one element or slice of a signal, `.o(arr[i])`. The
++      // symbol being driven is the array, so keep walking down to it; the
++      // index is settled by then, since generate loops are unrolled before
++      // synthesis.
++      e = &e->operands().front();
++    }
+     else
+     {
+       throw errort().with_location(e->source_location())

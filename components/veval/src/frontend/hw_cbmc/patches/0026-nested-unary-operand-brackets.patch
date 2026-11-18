@@ -1,0 +1,56 @@
+diff --git a/third_party/hw-cbmc/src/verilog/expr2verilog.cpp b/third_party/hw-cbmc/src/verilog/expr2verilog.cpp
+index 6dca1eb..13bda89 100644
+--- a/third_party/hw-cbmc/src/verilog/expr2verilog.cpp
++++ b/third_party/hw-cbmc/src/verilog/expr2verilog.cpp
+@@ -797,11 +797,49 @@ expr2verilogt::resultt expr2verilogt::convert_unary(
+ 
+   auto op = convert_rec(src.op());
+ 
++  // A unary operator takes a *primary* in the Verilog grammar
++  // (1800-2023 A.8.3: `unary_operator { attribute_instance } primary'), so an
++  // operand that is itself at unary precedence needs brackets. Hence >= and
++  // not >: the operand is bracketed when it binds no tighter than this
++  // operator, which for two nested unaries is the equal case.
++  //
++  // The old `>' went wrong in two different ways, and the second one is the
++  // dangerous one.
++  //
++  //   `!', `~' and the reductions. `!(!x)' was printed `!!x', which the
++  //   vendored parser.y really does refuse -- `unary_operator
++  //   attribute_instance_brace primary', line 5196 -- so the file did not
++  //   parse and the damage announced itself. This is the shape that made
++  //   three coral products unreadable.
++  //
++  //   Unary minus. `-(-x)' was printed `--x', with no space between the two
++  //   operators, and that is NOT a syntax error: the lexer reads it as one
++  //   TOK_MINUSMINUS and parser.y accepts `TOK_MINUSMINUS
++  //   attribute_instance_brace variable_lvalue' as ID_predecrement (line
++  //   5155). A double negation was printed as a decrement in place -- legal,
++  //   readable, and a different expression. The old code changed the meaning
++  //   of the property silently. (Unary minus is the one operator this grammar
++  //   takes an `expression' under -- line 5209, `%prec UNARY_MINUS' -- so
++  //   `- -x' with a space would have been correct; the printer emitted no
++  //   space.)
++  //
++  // Bracketing is semantics-preserving at every width: `!!x' on a multi-bit x
++  // is a coercion to bool and `!(!x)' is that same coercion, whereas dropping
++  // the pair would not be.
++  //
++  // A second class of operand is newly bracketed as well. The CTL operators
++  // AG/EG/AX/EX come through this function at MIN precedence, and MIN is the
++  // bottom of the enum, so `precedence > op.p' could never hold for them and
++  // their operands were never parenthesised; `precedence >= op.p' now
++  // brackets an operand that is itself at MIN (another CTL operator, or SVA).
++  // veval's printing paths do not reach the CTL operators, so no product
++  // changes because of it, but it is a behaviour change of this function and
++  // is recorded rather than discovered later.
+   std::string dest=symbol;
+-  if(precedence > op.p)
++  if(precedence >= op.p)
+     dest += '(';
+   dest += op.s;
+-  if(precedence > op.p)
++  if(precedence >= op.p)
+     dest += ')';
+ 
+   return {precedence, dest};

@@ -1,0 +1,11 @@
+/build/
+/.work/
+/crisp-out/
+/components/smartVerilog/.deps/
+/components/smartVerilog/otherTools/
+/components/smartVerilog/build/
+/components/veval/build/
+/components/veval/experiment/
+smart-work-*/
+*_assertion.sv
+__pycache__/

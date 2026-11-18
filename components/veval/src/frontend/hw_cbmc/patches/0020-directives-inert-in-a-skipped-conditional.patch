@@ -1,0 +1,47 @@
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_preprocessor.cpp b/third_party/hw-cbmc/src/verilog/verilog_preprocessor.cpp
+index 34bf498..a573e59 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_preprocessor.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_preprocessor.cpp
+@@ -804,6 +804,13 @@ void verilog_preprocessort::directive()
+   }
+   else if(text == "default_nettype")
+   {
++    if(!condition)
++    {
++      // ignore
++      tokenizer().skip_until_eol();
++      return;
++    }
++
+     // pass through
+     out << '`' << text;
+     while(true)
+@@ -821,12 +828,28 @@ void verilog_preprocessort::directive()
+   {
+     // 1800 2017 22.13
+     // String literal
++    //
++    // Inert inside a conditional that is not taken, like every other
++    // directive that produces output. Without the guard, text that the
++    // `ifdef excluded still reaches the parser: an included header whose
++    // include guard has already fired is skipped except for the `__FILE__
++    // and `__LINE__ inside it, which emit a string and a number into the
++    // middle of whatever the parser was doing. That is how lowRISC's
++    // prim_assert.sv -- included by every SRAM wrapper, so guarded out on
++    // every file after the first -- turned into a syntax error at the line
++    // of its own include guard.
++    if(!condition)
++      return;
++
+     out << verilog_string_literal(context().filename_as_string());
+   }
+   else if(text == "__LINE__")
+   {
+     // 1800 2017 22.13
+     // decimal number
++    if(!condition)
++      return;
++
+     out << tokenizer().line_no();
+   }
+   else

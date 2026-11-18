@@ -1,0 +1,14 @@
+[options]
+mode prove
+timeout 60
+
+[engines]
+abc pdr
+
+[script]
+read_verilog -formal -sv spec.sv token.sv
+prep -top token_formal
+
+[files]
+spec.sv
+token.sv rtl/token.sv

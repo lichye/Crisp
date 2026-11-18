@@ -1,0 +1,42 @@
+diff --git a/third_party/hw-cbmc/src/verilog/expr2verilog.cpp b/third_party/hw-cbmc/src/verilog/expr2verilog.cpp
+index f8bae09..c9cc078 100644
+--- a/third_party/hw-cbmc/src/verilog/expr2verilog.cpp
++++ b/third_party/hw-cbmc/src/verilog/expr2verilog.cpp
+@@ -287,8 +287,20 @@ expr2verilogt::resultt expr2verilogt::convert_binary(
+   bool first=true;
+   std::string dest;
+ 
++  // Every binary operator here groups to the left (1800-2017 table 11-2),
++  // so a RIGHT operand at the same precedence needs brackets too:
++  // `7 - (1 - 1)' printed without them is `7 - 1 - 1', which reads as
++  // `(7 - 1) - 1'. lower() builds exactly that shape for a select on an
++  // ascending `[lo:hi]' vector. The one exception is the same associative
++  // operator, where both groupings mean the same value.
++  const auto &id = src.id();
++  const bool associative = id == ID_plus || id == ID_mult ||
++                           id == ID_bitand || id == ID_bitor ||
++                           id == ID_bitxor || id == ID_and || id == ID_or;
++
+   forall_operands(it, src)
+   {
++    const bool right = !first;
+     if(first)
+       first=false;
+     else
+@@ -300,10 +312,14 @@ expr2verilogt::resultt expr2verilogt::convert_binary(
+ 
+     auto op = convert_rec(*it);
+ 
+-    if(precedence > op.p)
++    const bool bracket =
++      precedence > op.p ||
++      (right && precedence == op.p && !(associative && it->id() == id));
++
++    if(bracket)
+       dest += '(';
+     dest += op.s;
+-    if(precedence > op.p)
++    if(bracket)
+       dest += ')';
+   }
+ 

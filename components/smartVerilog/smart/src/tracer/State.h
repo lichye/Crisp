@@ -1,0 +1,36 @@
+#ifndef STATE_H
+#define STATE_H
+
+#include <vector>
+#include <string>
+#include <utility>
+#include "Utils.h"
+#include "Value.h"  
+#include "setups.h"
+
+
+class State
+{
+    public:
+        State();
+        State(bool);
+        ~State();
+        std::string toString();
+        std::string toVerilogExpr();
+        //std::string toSyGusString();
+        //std::string toVerilogExpr();
+        void addValue(Value*);
+        void addValue(Signal,Value*);
+        
+
+        bool isUndefined();
+        void setSignals(std::vector<Signal>*);
+        unsigned int signalSize();
+        std::vector<Value*> getValues();
+    private:
+        bool signalAllExist;
+        bool reachable;//if the state is reachable from model
+        std::vector<Signal>* signals;
+        std::vector<Value*> values;
+};
+#endif // STATEMAKER_H

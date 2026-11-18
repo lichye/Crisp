@@ -1,0 +1,81 @@
+diff --git a/src/verilog/verilog_ebmc_language.cpp b/src/verilog/verilog_ebmc_language.cpp
+index bb1f20e..d13bf83 100644
+--- a/src/verilog/verilog_ebmc_language.cpp
++++ b/src/verilog/verilog_ebmc_language.cpp
+@@ -142,7 +142,8 @@ verilog_ebmc_languaget::parse_treest verilog_ebmc_languaget::parse()
+ 
+ void verilog_ebmc_languaget::typecheck_module(
+   modulet &module,
+-  symbol_tablet &symbol_table)
++  symbol_tablet &symbol_table,
++  parse_treest *release_sources)
+ {
+   messaget log(message_handler);
+ 
+@@ -162,6 +163,25 @@ void verilog_ebmc_languaget::typecheck_module(
+     throw ebmc_errort{}.with_exit_code(2);
+   }
+ 
++  if(release_sources != nullptr)
++  {
++    // The sole top and all of its parameterized instances are now typed.
++    // Synthesis consumes their elaborated values, never the source module
++    // templates. Keep the parse-tree objects (and language standards) alive
++    // because module_map refers to them, but drop their parser-only payload.
++    for(auto &tree : *release_sources)
++    {
++      tree.item_map.clear();
++      tree.clear();
++    }
++    std::vector<irep_idt> sources;
++    for(const auto &entry : symbol_table.symbols)
++      if(entry.second.type.id() == ID_module_source)
++        sources.push_back(entry.first);
++    for(const auto &source : sources)
++      symbol_table.remove(source);
++  }
++
+   messaget message(message_handler);
+   log.status() << "Synthesis " << module.identifier << messaget::eom;
+ 
+@@ -186,7 +206,7 @@ void verilog_ebmc_languaget::typecheck_module(
+ }
+ 
+ transition_systemt verilog_ebmc_languaget::typecheck(
+-  const parse_treest &parse_trees,
++  parse_treest &parse_trees,
+   const std::vector<irep_idt> &top_level_modules,
+   symbol_tablet &&symbol_table)
+ {
+@@ -239,7 +259,13 @@ transition_systemt verilog_ebmc_languaget::typecheck(
+     auto m_it = module_map.find(verilog_module_symbol(top_level_module));
+     CHECK_RETURN(m_it != module_map.end());
+ 
+-    typecheck_module(m_it->second, transition_system.symbol_table);
++    const bool release_sources =
++      top_level_modules.size() == 1 &&
++      cmdline.isset("veval-release-source-trees");
++    typecheck_module(
++      m_it->second,
++      transition_system.symbol_table,
++      release_sources ? &parse_trees : nullptr);
+   }
+ 
+   return transition_system;
+diff --git a/src/verilog/verilog_ebmc_language.h b/src/verilog/verilog_ebmc_language.h
+index bc6b68a..27d4e27 100644
+--- a/src/verilog/verilog_ebmc_language.h
++++ b/src/verilog/verilog_ebmc_language.h
+@@ -64,10 +64,10 @@ protected:
+ 
+   symbol_tablet elaborate_compilation_units(const parse_treest &);
+   transition_systemt typecheck(
+-    const parse_treest &,
++    parse_treest &,
+     const std::vector<irep_idt> &top_level_modules,
+     symbol_tablet &&);
+-  void typecheck_module(modulet &, symbol_tablet &);
++  void typecheck_module(modulet &, symbol_tablet &, parse_treest * = nullptr);
+ 
+   void create_root_module(
+     const std::vector<irep_idt> &top_level_modules,

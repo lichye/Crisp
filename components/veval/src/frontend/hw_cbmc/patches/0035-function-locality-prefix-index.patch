@@ -1,0 +1,159 @@
+--- a/src/verilog/verilog_synthesis.cpp
++++ b/src/verilog/verilog_synthesis.cpp
+@@ -9,6 +9,15 @@
+ #include "verilog_synthesis.h"
+ #include "verilog_synthesis_class.h"
+ 
++static transt verilog_synthesis_indexed(
++  symbol_table_baset &,
++  const irep_idt &,
++  verilog_standardt,
++  bool,
++  bool,
++  message_handlert &,
++  std::shared_ptr<verilog_synthesist::symbol_name_indext>);
++
+ #include <util/arith_tools.h>
+ #include <util/bitvector_expr.h>
+ #include <util/bitvector_types.h>
+@@ -332,15 +341,21 @@
+ 
+ void verilog_synthesist::function_locality(const symbolt &function_symbol)
+ {
+-  // Find all local symbols of the function, mark their
+-  // assignments as local.
++  // Preserve the exact prefix rule without scanning the entire chip for
++  // every function call. Synthesis only inserts symbols in replace_by_wire;
++  // that path also maintains this index, including across nested modules.
++  if(!symbol_names->initialized)
++  {
++    for(const auto &symbol : symbol_table.symbols)
++      symbol_names->names.insert(symbol.first);
++    symbol_names->initialized = true;
++  }
+   auto prefix = id2string(function_symbol.name) + '.';
+-  for(auto &symbol : symbol_table.symbols)
++  for(auto it = symbol_names->names.lower_bound(irep_idt{prefix});
++      it != symbol_names->names.end() && it->starts_with(prefix);
++      ++it)
+   {
+-    if(symbol.first.starts_with(prefix))
+-    {
+-      assignments[symbol.first].is_cycle_local = true;
+-    }
++    assignments[*it].is_cycle_local = true;
+   }
+ }
+ 
+@@ -1046,6 +1061,8 @@
+   {
+     throw errort() << "failed to add replace_by_wire symbol";
+   }
++  if(symbol_names->initialized)
++    symbol_names->names.insert(new_symbol.name);
+ 
+   what=symbol_expr;
+ }
+@@ -1572,13 +1589,14 @@
+     const symbolt &module_symbol = ns.lookup(module_identifier);
+ 
+     // get the transition relation of the instantiated module
+-    auto trans_inst = verilog_synthesis(
++    auto trans_inst = verilog_synthesis_indexed(
+       symbol_table,
+       module_identifier,
+       standard,
+       ignore_initial,
+       initial_zero,
+-      get_message_handler());
++      get_message_handler(),
++      symbol_names);
+ 
+     expand_module_instance(module_symbol, trans_inst, instance, trans_dest);
+   }
+@@ -4233,6 +4251,20 @@
+   bool initial_zero,
+   message_handlert &message_handler)
+ {
++  return verilog_synthesis_indexed(
++    symbol_table, module, standard, ignore_initial, initial_zero,
++    message_handler, {});
++}
++
++static transt verilog_synthesis_indexed(
++  symbol_table_baset &symbol_table,
++  const irep_idt &module,
++  verilog_standardt standard,
++  bool ignore_initial,
++  bool initial_zero,
++  message_handlert &message_handler,
++  std::shared_ptr<verilog_synthesist::symbol_name_indext> symbol_names)
++{
+   const namespacet ns(symbol_table);
+ 
+   verilog_synthesist verilog_synthesis(
+@@ -4242,7 +4274,8 @@
+     ns,
+     symbol_table,
+     module,
+-    message_handler);
++    message_handler,
++    std::move(symbol_names));
+ 
+   try
+   {
+--- a/src/verilog/verilog_synthesis_class.h
++++ b/src/verilog/verilog_synthesis_class.h
+@@ -21,6 +21,7 @@
+ #include "verilog_typecheck_base.h"
+ 
+ #include <map>
++#include <memory>
+ #include <set>
+ #include <unordered_set>
+ 
+@@ -41,6 +42,19 @@
+   public verilog_symbol_tablet
+ {
+ public:
++  struct symbol_name_indext
++  {
++    struct lexical_lesst
++    {
++      bool operator()(const irep_idt &a, const irep_idt &b) const
++      {
++        return a.compare(b) < 0;
++      }
++    };
++    bool initialized = false;
++    std::set<irep_idt, lexical_lesst> names;
++  };
++
+   verilog_synthesist(
+     verilog_standardt _standard,
+     bool _ignore_initial,
+@@ -48,11 +62,14 @@
+     const namespacet &_ns,
+     symbol_table_baset &_symbol_table,
+     const irep_idt &_module,
+-    message_handlert &_message_handler)
++    message_handlert &_message_handler,
++    std::shared_ptr<symbol_name_indext> _symbol_names = {})
+     : verilog_typecheck_baset(_standard, _ns, _message_handler),
+       verilog_symbol_tablet(_symbol_table),
+       ignore_initial(_ignore_initial),
+       initial_zero(_initial_zero),
++      symbol_names(_symbol_names ? std::move(_symbol_names)
++                                 : std::make_shared<symbol_name_indext>()),
+       value_map(NULL),
+       module(_module),
+       temporary_counter(0)
+@@ -79,6 +96,8 @@
+ protected:
+   bool ignore_initial;
+   bool initial_zero;
++  // Shared by recursive module synthesis within this one symbol table.
++  std::shared_ptr<symbol_name_indext> symbol_names;
+ 
+   [[nodiscard]] exprt synth_expr_rec(exprt expr, symbol_statet symbol_state);
+ 

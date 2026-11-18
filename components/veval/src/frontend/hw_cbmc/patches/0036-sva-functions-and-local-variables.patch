@@ -1,0 +1,870 @@
+diff --git a/src/verilog/expr2verilog.cpp b/src/verilog/expr2verilog.cpp
+index b7d6f0e..82fbb37 100644
+--- a/src/verilog/expr2verilog.cpp
++++ b/src/verilog/expr2verilog.cpp
+@@ -1515,6 +1518,9 @@ Function: expr2verilogt::convert_symbol
+ 
+ expr2verilogt::resultt expr2verilogt::convert_symbol(const exprt &src)
+ {
++  if(src.get_bool("#veval_sva_local"))
++    return {verilog_precedencet::MAX,
++            id2string(src.get("#veval_sva_local_name"))};
+   std::string dest=src.get_string(ID_identifier);
+  
+   if(std::string(dest, 0, 9)=="Verilog::")
+@@ -2020,6 +2026,27 @@ Function: expr2verilogt::convert_rec
+ 
+ expr2verilogt::resultt expr2verilogt::convert_rec(const exprt &src)
+ {
++  // The ordinary EBMC description printer has no module declaration context.
++  // ConsFlow's typed product/monitor printer renders this lexical DAG as an
++  // automatic function plus a call. Keep descriptions bounded and visibly
++  // non-executable, rather than dumping a quadratically indented let tree.
++  if(src.id() == ID_let && src.get_bool("#veval_sva_compact_function"))
++    return {verilog_precedencet::MAX, "<pure-function-expression>"};
++  // Property normalization can introduce the generic implication node.
++  // Printing its whole irep would recursively expand compact function DAGs
++  // hidden in the consequent instead of visiting their bounded renderer.
++  if(src.id() == ID_implies)
++    return convert_sva_binary("implies", to_binary_expr(src));
++  if(src.id() == "#veval_sva_match")
++  {
++    std::string text = "(" + convert(src.operands()[0]);
++    for(const auto &assignment : src.operands()[1].operands())
++      text += ", " + convert(assignment);
++    return {verilog_precedencet::MAX, text + ")"};
++  }
++  if(src.id() == "#veval_sva_assign")
++    return {verilog_precedencet::MAX,
++            convert(src.operands()[0]) + " = " + convert(src.operands()[1])};
+   static const std::map<irep_idt, std::function<resultt(expr2verilogt &, const exprt &)>> action_table =
+   {
+     { ID_plus, [](expr2verilogt &expr2verilog, const exprt &src) { return expr2verilog.convert_binary(
+diff --git a/src/verilog/parser.y b/src/verilog/parser.y
+index 34c10b0..5bea2f2 100644
+--- a/src/verilog/parser.y
++++ b/src/verilog/parser.y
+@@ -1792,11 +1792,13 @@ data_declaration_var:
+           TOK_VAR lifetime_opt data_type_or_implicit list_of_variable_decl_assignments ';'
+                 { init($$, ID_decl);
+                   stack_expr($$).set(ID_class, ID_var);
++                  addswap($$, ID_verilog_lifetime, $2);
+                   addswap($$, ID_type, $3);
+                   swapop($$, $4); }
+         | lifetime data_type list_of_variable_decl_assignments ';'
+                 { init($$, ID_decl);
+                   stack_expr($$).set(ID_class, ID_reg);
++                  addswap($$, ID_verilog_lifetime, $1);
+                   addswap($$, ID_type, $2);
+                   swapop($$, $3); }
+         | data_type list_of_variable_decl_assignments ';'
+@@ -3025,17 +3027,25 @@ property_declaration:
+                   auto base_name = stack_expr($2).get(ID_base_name);
+                   push_scope(base_name, ".", verilog_scopet::PROPERTY); }
+           property_port_list_paren_opt ';'
+-          property_spec semicolon_opt
++          assertion_variable_declarations property_spec semicolon_opt
+           TOK_ENDPROPERTY property_identifier_opt
+                 { init($$, ID_verilog_property_declaration);
+                   auto base_name = stack_expr($2).get(ID_base_name);
+                   stack_expr($$).set(ID_base_name, base_name);
+                   addswap($$, ID_ports, $4);
+-                  mto($$, $6);
++                  addswap($$, "#veval_sva_local_decls", $6);
++                  mto($$, $7);
+                   pop_scope();
+                 }
+         ;
+ 
++assertion_variable_declarations:
++          /* optional */
++                { init($$); }
++        | assertion_variable_declarations data_declaration
++                { $$ = $1; mto($$, $2); }
++        ;
++
+ property_identifier_opt:
+           /* optional */
+         | TOK_COLON property_identifier
+@@ -3142,6 +3152,8 @@ property_expr_proper:
+                 { init($$, ID_sva_weak); mto ($$, $3); }
+         | '(' property_expr_proper ')'
+                 { $$ = $2; }
++        | '(' property_expr ',' sequence_match_item_brace ')'
++                { init($$, "#veval_sva_match"); mto($$, $2); mto($$, $4); }
+         | "not" property_expr
+                 { init($$, ID_sva_not); mto($$, $2); }
+         | property_expr "or" property_expr
+@@ -3272,12 +3284,13 @@ sequence_declaration:
+                   push_scope(base_name, ".", verilog_scopet::SEQUENCE);
+                 }
+           sequence_port_list_opt ';'
+-          sequence_expr semicolon_opt
++          assertion_variable_declarations sequence_expr semicolon_opt
+           "endsequence" sequence_identifier_opt
+                 { $$=$2;
+                   stack_expr($$).set(ID_base_name, stack_expr($3).get(ID_base_name));
+                   addswap($$, ID_ports, $5);
+-                  mto($$, $7);
++                  addswap($$, "#veval_sva_local_decls", $7);
++                  mto($$, $8);
+                   pop_scope();
+                 }
+         ;
+@@ -3341,6 +3354,8 @@ sequence_expr_proper:
+                   mto($$, $3); }
+         | '(' sequence_expr_proper ')'
+                 { $$ = $2; }
++        | '(' sequence_expr ',' sequence_match_item_brace ')'
++                { init($$, "#veval_sva_match"); mto($$, $2); mto($$, $4); }
+         | '(' sequence_expr_proper ')' sequence_abbrev
+                 { $$ = $4;
+                   // preserve the operand ordering as in the source code
+@@ -3369,7 +3384,9 @@ sequence_expr_proper:
+ 
+ sequence_match_item_brace:
+           sequence_match_item
++                { init($$); mto($$, $1); }
+         | sequence_match_item_brace ',' sequence_match_item
++                { $$ = $1; mto($$, $3); }
+         ;
+ 
+ sequence_match_item:
+diff --git a/src/verilog/verilog_elaborate.cpp b/src/verilog/verilog_elaborate.cpp
+index 2827e68..6be5337 100644
+--- a/src/verilog/verilog_elaborate.cpp
++++ b/src/verilog/verilog_elaborate.cpp
+@@ -195,6 +195,8 @@ void verilog_typecheckt::collect_symbols(
+   add_symbol(symbol);
+ 
+   function_or_task_name = symbol.name;
++  for(const auto &local : declaration.find("#veval_sva_local_decls").get_sub())
++    collect_symbols(to_verilog_decl(static_cast<const exprt &>(local)));
+ 
+   for(auto &port : declaration.ports())
+     for(auto &declarator : port.declarators())
+@@ -228,6 +230,8 @@ void verilog_typecheckt::collect_symbols(
+   add_symbol(symbol);
+ 
+   function_or_task_name = symbol.name;
++  for(const auto &local : declaration.find("#veval_sva_local_decls").get_sub())
++    collect_symbols(to_verilog_decl(static_cast<const exprt &>(local)));
+ 
+   for(auto &port : declaration.ports())
+     for(auto &declarator : port.declarators())
+@@ -754,14 +758,37 @@ void verilog_typecheckt::collect_symbols(
+   symbol.pretty_name = strip_verilog_root_prefix(symbol.name);
+   symbol.module = verilog_root_module_identifier();
+   symbol.value = verilog_tf_sourcet{decl}; // copy the entire declaration
++  symbol.type.set("#veval_automatic_function",
++                  decl.find(ID_verilog_lifetime).id() == ID_automatic);
++  std::function<bool(const irept &)> static_local = [&](const irept &tree)
++  {
++    if(tree.id() == ID_decl && tree.find(ID_verilog_lifetime).id() == ID_static)
++      return true;
++    for(const auto &child : tree.get_sub())
++      if(static_local(child))
++        return true;
++    for(const auto &child : tree.get_named_sub())
++      if(static_local(child.second))
++        return true;
++    return false;
++  };
++  symbol.type.set("#veval_static_local", static_local(decl));
+ 
+   add_symbol(symbol);
+ 
+   function_or_task_name = symbol.name;
+ 
+   // do the ANSI-style ports, if applicable
+-  for(auto &port_decl : decl.ports())
+-  {
++  typet previous_port_type{ID_nil};
++  for(const auto &raw_port_decl : decl.ports())
++  {
++    auto port_decl = raw_port_decl;
++    // `input logic [W-1:0] a, b' gives b the preceding data type as
++    // well as the preceding direction. Previously b became a single bit.
++    if(port_decl.get_class() == ID_verilog_no_direction &&
++       port_decl.type().is_nil() && previous_port_type.is_not_nil())
++      port_decl.type() = previous_port_type;
++    previous_port_type = port_decl.type();
+     // These must have one declarator exactly.
+     DATA_INVARIANT(
+       port_decl.declarators().size() == 1, "must have one port declarator");
+diff --git a/src/verilog/verilog_synthesis.cpp b/src/verilog/verilog_synthesis.cpp
+index cd915d8..f82d607 100644
+--- a/src/verilog/verilog_synthesis.cpp
++++ b/src/verilog/verilog_synthesis.cpp
+@@ -27,6 +27,7 @@ static transt verilog_synthesis_indexed(
+ #include <util/identifier.h>
+ #include <util/mathematical_types.h>
+ #include <util/simplify_expr.h>
++#include <util/simplify_expr_class.h>
+ #include <util/std_expr.h>
+ 
+ #include <ebmc/ebmc_error.h>
+@@ -40,9 +41,110 @@ static transt verilog_synthesis_indexed(
+ #include "verilog_typecheck_expr.h"
+ 
+ #include <cassert>
++#include <functional>
+ #include <map>
+ #include <set>
+ 
++// Preserve sharing in a pure expression as lexical let bindings. These are
++// combinational expressions, not design wires or additional temporal state.
++static exprt compact_sva_function(const exprt &root)
++{
++  std::map<const void *, std::size_t> uses;
++  std::function<void(const exprt &)> count = [&](const exprt &e)
++  {
++    if(++uses[&e.get_sub()] != 1)
++      return;
++    for(const auto &op : e.operands())
++      count(op);
++  };
++  count(root);
++  if(uses.size() < 32)
++    return root;
++  std::map<const void *, exprt> mapped;
++  std::vector<std::pair<symbol_exprt, exprt>> bindings;
++  std::function<exprt(const exprt &)> convert = [&](const exprt &e)
++  {
++    auto key = &e.get_sub();
++    auto found = mapped.find(key);
++    if(found != mapped.end())
++      return found->second;
++    auto value = e;
++    for(auto &op : value.operands())
++      op = convert(op);
++    if(uses.at(key) > 1 && !e.operands().empty() &&
++       (e.type().id() == ID_bool || can_cast_type<bitvector_typet>(e.type())))
++    {
++      symbol_exprt variable{"__cf_fn_tmp_" + std::to_string(bindings.size()),
++                            e.type()};
++      variable.set("#veval_sva_function_local", true);
++      bindings.emplace_back(variable, value);
++      value = variable;
++    }
++    mapped.emplace(key, value);
++    return value;
++  };
++  auto result = convert(root);
++  for(auto it = bindings.rbegin(); it != bindings.rend(); ++it)
++    result = let_exprt{it->first, it->second, result};
++  if(!bindings.empty())
++    result.set("#veval_sva_compact_function", true);
++  return result;
++}
++
++// Constant bit updates may completely overwrite an initially unknown packed
++// local/return value. Keep the last write to each bit and discard the old
++// value only when every bit is covered. Reads in the written values still
++// undergo the ordinary uninitialized-local check.
++static exprt remove_overwritten_sva_bits(const exprt &root)
++{
++  std::map<const void *, exprt> mapped;
++  std::function<exprt(const exprt &)> convert = [&](const exprt &expression)
++  {
++    const auto key = &expression.get_sub();
++    auto found = mapped.find(key);
++    if(found != mapped.end())
++      return found->second;
++    if(expression.id() == ID_with &&
++       can_cast_type<bitvector_typet>(expression.type()))
++    {
++      const auto width = to_bitvector_type(expression.type()).get_width();
++      std::map<std::size_t, exprt> bits;
++      const exprt *current = &expression;
++      while(current->id() == ID_with && current->type() == expression.type())
++      {
++        const auto &update = to_with_expr(*current);
++        auto position = numeric_cast<mp_integer>(update.where());
++        if(!position || *position < 0 || *position >= width)
++          break;
++        bits.emplace(numeric_cast_v<std::size_t>(*position),
++                     update.new_value());
++        if(bits.size() == width)
++        {
++          exprt::operandst operands;
++          for(auto bit = bits.rbegin(); bit != bits.rend(); ++bit)
++            operands.push_back(convert(bit->second));
++          exprt result =
++              concatenation_exprt{std::move(operands), expression.type()};
++          mapped.emplace(key, result);
++          return result;
++        }
++        current = &update.old();
++      }
++    }
++    auto result = expression;
++    for(std::size_t i = 0; i < expression.operands().size(); ++i)
++    {
++      const auto &old_operand = expression.operands()[i];
++      const auto new_operand = convert(old_operand);
++      if(&old_operand.get_sub() != &new_operand.get_sub())
++        result.operands()[i] = new_operand;
++    }
++    mapped.emplace(key, result);
++    return result;
++  };
++  return convert(root);
++}
++
+ /*******************************************************************\
+ 
+ Function: verilog_synthesist::synth_expr
+@@ -55,6 +157,56 @@ Function: verilog_synthesist::synth_expr
+ 
+ \*******************************************************************/
+ 
++exprt verilog_synthesist::simplify_sva_expression(const exprt &original)
++{
++  const void *identity = &original.get_sub();
++  auto cached = pure_sva_simplified.find(identity);
++  if(cached != pure_sva_simplified.end())
++    return cached->second.second;
++  auto expression = original;
++  for(auto &operand : expression.operands())
++    operand = simplify_sva_expression(operand);
++  // Children have already been simplified once. Calling the recursive
++  // simplifier here revisits the shared loop prefix exponentially.
++  simplify_exprt simplifier(ns);
++  exprt result;
++  if(expression.id() == ID_if && to_if_expr(expression).cond().is_constant())
++  {
++    const auto &conditional = to_if_expr(expression);
++    result = conditional.cond().is_true() ? conditional.true_case()
++                                          : conditional.false_case();
++  }
++  else if(expression.id() == ID_typecast &&
++          !to_typecast_expr(expression).op().is_constant())
++  {
++    // The generic node simplifier recursively distributes Boolean casts
++    // through conditionals. Keep the exact typed cast instead of expanding
++    // the already-shared numerical DAG a second time.
++    const auto &operand = to_typecast_expr(expression).op();
++    result = expression.type() == operand.type() ? operand : expression;
++  }
++  else if(expression.id() == ID_concatenation &&
++          std::any_of(
++              expression.operands().begin(), expression.operands().end(),
++              [](const exprt &operand) { return !operand.is_constant(); }))
++  {
++    // Concatenation simplification also invokes recursive cast distribution.
++    // A reduction tree passes large shared arithmetic results into later
++    // calls; preserve this exact concatenation instead of expanding them.
++    result = expression;
++  }
++  else
++    result = simplifier.simplify_node(expression).expr;
++  pure_sva_simplified.emplace(identity, std::make_pair(original, result));
++  // Later statements receive the simplified DAG, not the pre-simplification
++  // nodes. Remember that identity as well or every nested call reprocesses
++  // and copies the entire already-simplified prefix.
++  const exprt &stable_result = result;
++  pure_sva_simplified.emplace(&stable_result.get_sub(),
++                              std::make_pair(result, result));
++  return result;
++}
++
+ exprt verilog_synthesist::synth_expr(exprt expr, symbol_statet symbol_state)
+ {
+   // First lower any Verilog-specific expressions
+@@ -79,6 +231,8 @@ Function: verilog_synthesist::synth_expr_rec
+ 
+ exprt verilog_synthesist::synth_expr_rec(exprt expr, symbol_statet symbol_state)
+ {
++  if(expr.id() == ID_symbol && expr.get_bool("#veval_sva_local"))
++    return expr;
+   if(expr.id() == ID_function_call)
+   {
+     return expand_function_call(to_function_call_expr(expr), symbol_state);
+@@ -371,14 +525,69 @@ Function: verilog_synthesist::expand_function_call
+ 
+ \*******************************************************************/
+ 
+-exprt verilog_synthesist::expand_function_call(
+-  const function_call_exprt &call,
+-  symbol_statet symbol_state)
++void verilog_synthesist::validate_sva_function(const symbolt &function,
++                                               std::set<irep_idt> &active)
++{
++  if(pure_sva_checked.count(function.name))
++    return;
++  auto refuse = [&](const std::string &why)
++  {
++    throw errort().with_location(function.location)
++        << "SVA function " << function.base_name << ": " << why;
++  };
++  if(function.type.id() != ID_code ||
++     to_code_type(function.type).return_type() == empty_typet())
++    refuse("tasks are not pure expressions");
++  if(!function.type.get_bool("#veval_automatic_function"))
++    refuse("requires automatic lifetime");
++  if(function.type.get_bool("#veval_static_local"))
++    refuse("static local state is not a pure expression");
++  if(!active.insert(function.name).second)
++    refuse("recursive calls are not supported");
++  for(const auto &parameter : to_code_type(function.type).parameters())
++    if(parameter.get_bool(ID_output))
++      refuse("output/inout arguments have side effects");
++  const auto prefix = id2string(function.name) + '.';
++  std::function<void(const exprt &)> inspect = [&](const exprt &expression)
++  {
++    if(expression.id() == ID_hierarchical_identifier)
++      refuse("reads a hierarchical name");
++    if(expression.id() == ID_symbol)
++    {
++      const auto &symbol = ns.lookup(to_symbol_expr(expression));
++      if(symbol.type.id() == ID_code)
++        validate_sva_function(symbol, active);
++      else if(id2string(symbol.name).compare(0, prefix.size(), prefix) != 0)
++        refuse("reads or writes non-local name " + id2string(symbol.name));
++    }
++    if(expression.id() == ID_verilog_non_blocking_assign ||
++       expression.id() == ID_event_guard || expression.id() == ID_delay ||
++       expression.id() == ID_forever || expression.id() == ID_force ||
++       expression.id() == ID_release)
++      refuse("statement has timing or side effects: " + expression.id_string());
++    for(const auto &operand : expression.operands())
++      inspect(operand);
++  };
++  inspect(function.value);
++  active.erase(function.name);
++  pure_sva_checked.insert(function.name);
++}
++
++exprt verilog_synthesist::expand_function_call(const function_call_exprt &call,
++                                               symbol_statet symbol_state,
++                                               bool isolated_pure_frame)
+ {
+   // Is it a 'system function call'?
+   if(call.is_system_function_call())
+   {
+     auto base_name = to_verilog_identifier_expr(call.function()).base_name();
++    if(pure_sva_depth &&
++       (base_name == "$ND" || base_name == "$value$plusargs" ||
++        base_name == "$test$plusargs" || base_name == "$past" ||
++        base_name == "$stable" || base_name == "$rose" ||
++        base_name == "$fell" || base_name == "$changed"))
++      throw errort().with_location(call.source_location())
++          << "SVA pure function uses stateful system call " << base_name;
+     if(base_name == "$ND")
+     {
+       std::string identifier =
+@@ -470,10 +679,55 @@ exprt verilog_synthesist::expand_function_call(
+   }
+ 
+   // check some restrictions
+-  if(construct == constructt::OTHER)
+-  {
+-    throw errort().with_location(call.source_location())
+-      << "function call not allowed here";
++  if(construct == constructt::OTHER || (pure_sva_depth && !isolated_pure_frame))
++  {
++    const auto &function_symbol = ns.lookup(to_symbol_expr(call.function()));
++    std::set<irep_idt> active;
++    validate_sva_function(function_symbol, active);
++    auto prepared = call;
++    for(auto &argument : prepared.arguments())
++      argument = synth_expr_rec(argument, symbol_state);
++    value_mapt temporary;
++    auto *old_values = value_map;
++    const auto old_construct = construct;
++    value_map = &temporary;
++    construct = constructt::ALWAYS_COMB;
++    const bool outermost = pure_sva_depth++ == 0;
++    if(outermost)
++    {
++      pure_sva_steps = 0;
++      pure_sva_simplified.clear();
++    }
++    try
++    {
++      // A pure callee cannot modify its caller's locals. Keeping a separate
++      // value map also prevents every callee return/branch from merging all
++      // accumulated caller temporaries (large numerical reference functions).
++      auto result =
++          expand_function_call(prepared, symbol_statet::CURRENT, true);
++      if(outermost)
++        result = compact_sva_function(result);
++      --pure_sva_depth;
++      value_map = old_values;
++      construct = old_construct;
++      return result;
++    }
++    catch(const errort &error)
++    {
++      --pure_sva_depth;
++      value_map = old_values;
++      construct = old_construct;
++      throw errort().with_location(call.source_location())
++          << "SVA function " << function_symbol.base_name << ": "
++          << error.what();
++    }
++    catch(...)
++    {
++      --pure_sva_depth;
++      value_map = old_values;
++      construct = old_construct;
++      throw;
++    }
+   }
+ 
+   // this is essentially inlined
+@@ -528,6 +782,14 @@ exprt verilog_synthesist::expand_function_call(
+   for(unsigned i=0; i<parameters.size(); i++)
+   {
+     const symbolt &a_symbol=ns.lookup(parameters[i].get_identifier());
++    if(pure_sva_depth && isolated_pure_frame)
++    {
++      // The caller already synthesized these typed actuals. Passing a shared
++      // numerical expression through synth_expr again would recursively copy
++      // it into a tree at every nested call boundary.
++      assignment_rec(a_symbol.symbol_expr(), actuals[i], true);
++      continue;
++    }
+     verilog_blocking_assignt assignment{
+       a_symbol.symbol_expr().with_source_location(call), actuals[i]};
+     assignment.add_source_location()=call.source_location();
+@@ -538,16 +800,45 @@ exprt verilog_synthesist::expand_function_call(
+     synth_statement(to_verilog_statement(statement));
+ 
+   // merge in edges from 'return' statements, if any
+-  for(auto &state : tf_frame.value().return_statement_states)
+-  {
+-    auto guard_expr = conjunction(state.guard);
+-    merge(
+-      guard_expr, state.current, value_map->current, false, value_map->current);
+-    merge(guard_expr, state.final, value_map->final, true, value_map->final);
+-  }
++  if(!pure_sva_depth)
++    for(auto &state : tf_frame.value().return_statement_states)
++    {
++      auto guard_expr = conjunction(state.guard);
++      merge(guard_expr, state.current, value_map->current, false,
++            value_map->current);
++      merge(guard_expr, state.final, value_map->final, true, value_map->final);
++    }
+ 
+   // replace function call by return value symbol
+   auto result = synth_expr(return_symbol.symbol_expr(), symbol_statet::CURRENT);
++  if(pure_sva_depth)
++  {
++    // Only the return value escapes a pure function. Earlier executed returns
++    // take priority over later statements, including an unconditional fallback
++    // after a conditional return. Merging in forward order would overwrite it.
++    const auto &states = tf_frame.value().return_statement_states;
++    for(auto state = states.rbegin(); state != states.rend(); ++state)
++      result = simplify_sva_expression(if_exprt{
++          conjunction(state->guard),
++          current_value(state->current, return_symbol, false), result});
++    result = remove_overwritten_sva_bits(result);
++    const auto local_prefix = id2string(symbol.name) + '.';
++    std::set<const void *> visited;
++    std::function<void(const exprt &)> check = [&](const exprt &expression)
++    {
++      if(!visited.insert(&expression.get_sub()).second)
++        return;
++      if(expression.id() == ID_symbol &&
++         id2string(to_symbol_expr(expression).identifier())
++                 .compare(0, local_prefix.size(), local_prefix) == 0)
++        throw errort().with_location(call.source_location())
++            << "SVA function " << symbol.base_name
++            << ": reads an uninitialized local or return value";
++      for(const auto &operand : expression.operands())
++        check(operand);
++    };
++    check(result);
++  }
+ 
+   // restore the previous task/function frame
+   tf_frame = old_tf_frame;
+@@ -784,11 +1075,20 @@ void verilog_synthesist::assignment_rec(
+ 
+     if(new_value.is_not_nil())
+     {
++      // Inlining erases the receiving variable, but its width boundary must
++      // remain when printing the expression back to SVA. For example, the
++      // four-bit temporary in t = a + b; result = t * 3 must still wrap before
++      // multiplication widens it. This annotation is printer-only; the typed
++      // expression already has the correct bit-vector semantics.
++      if(pure_sva_depth && can_cast_type<bitvector_typet>(new_value.type()))
++        new_value.set("#veval_sva_assignment_boundary", true);
++
+       // These can explode if the symbol is assigned more than once
+       // and also used more than once, e.g., in a multi-dimensional array.
+       // We add a fresh symbol for anything that is not trivial
+       // to prevent that.
+-      if(new_value.id() != ID_symbol && new_value.id() != ID_constant)
++      if(!pure_sva_depth && new_value.id() != ID_symbol &&
++         new_value.id() != ID_constant)
+       {
+         replace_by_wire(new_value, symbol);
+       }
+@@ -2398,9 +2698,10 @@ void verilog_synthesist::synth_assign(const verilog_assignt &statement)
+   }
+ 
+   // Can the rhs be simplified to a constant, for propagation?
+-  auto rhs_simplified = simplify_expr(rhs, ns);
++  auto rhs_simplified =
++      pure_sva_depth ? simplify_sva_expression(rhs) : simplify_expr(rhs, ns);
+ 
+-  if(rhs_simplified.is_constant())
++  if(pure_sva_depth || rhs_simplified.is_constant())
+     rhs = rhs_simplified;
+ 
+   bool blocking = statement.id() != ID_verilog_non_blocking_assign;
+@@ -2853,6 +3154,8 @@ void verilog_synthesist::synth_if(
+   const verilog_ift &statement)
+ {
+   auto if_cond = synth_expr(statement.cond(), symbol_statet::CURRENT);
++  if(pure_sva_depth)
++    if_cond = simplify_sva_expression(if_cond);
+ 
+   if(if_cond.is_true())
+   {
+@@ -2860,6 +3163,13 @@ void verilog_synthesist::synth_if(
+     return;
+   }
+ 
++  if(pure_sva_depth && if_cond.is_false())
++  {
++    if(statement.has_else_case())
++      synth_statement(statement.else_case());
++    return;
++  }
++
+   // save current value_map pointer
+   value_mapt *old_map=value_map;
+ 
+@@ -2930,7 +3240,16 @@ void verilog_synthesist::merge(
+     exprt false_value=current_value(false_map, symbol, use_previous_assignments);
+ 
+     // this is a phi-node equivalent
+-    if_exprt value{guard, true_value, false_value, symbol.type};
++    exprt value = if_exprt{guard, true_value, false_value, symbol.type};
++    if(pure_sva_depth)
++    {
++      // Without synthesis wires, repeatedly merging unchanged values expands
++      // a bounded reference loop exponentially. Simplify each merge while the
++      // expression is still small, before a later read substitutes it again.
++      value = simplify_sva_expression(value);
++      if(can_cast_type<bitvector_typet>(value.type()))
++        value.set("#veval_sva_assignment_boundary", true);
++    }
+ 
+     dest.symbol_map[symbol.name].swap(value);
+     dest.changed.insert(symbol.name);
+@@ -3490,6 +3809,10 @@ Function: verilog_synthesist::synth_statement
+ void verilog_synthesist::synth_statement(
+   const verilog_statementt &statement)
+ {
++  if(pure_sva_depth && ++pure_sva_steps > 100000)
++    throw errort().with_location(statement.source_location())
++        << "SVA function expansion exceeds 100000 statements; loop is not "
++           "finitely bounded here";
+   if(statement.id()==ID_block)
+     synth_block(to_verilog_block(statement));
+   else if(statement.id() == ID_break)
+diff --git a/src/verilog/verilog_synthesis_class.h b/src/verilog/verilog_synthesis_class.h
+index a2d5a48..11b145c 100644
+--- a/src/verilog/verilog_synthesis_class.h
++++ b/src/verilog/verilog_synthesis_class.h
+@@ -23,6 +23,7 @@ Author: Daniel Kroening, kroening@kroening.com
+ #include <map>
+ #include <memory>
+ #include <set>
++#include <unordered_map>
+ #include <unordered_set>
+ 
+ /*******************************************************************\
+@@ -103,6 +104,15 @@ protected:
+ 
+   // For $ND(...)
+   std::size_t nondet_count = 0;
++  // Assertion functions are evaluated in a temporary, pure call frame.
++  std::size_t pure_sva_depth = 0;
++  std::size_t pure_sva_steps = 0;
++  std::set<irep_idt> pure_sva_checked;
++  void validate_sva_function(const symbolt &, std::set<irep_idt> &);
++  // Keep the original expression alive: shared-node addresses cannot then be
++  // recycled while this call's memo table is in use.
++  std::unordered_map<const void *, std::pair<exprt, exprt>> pure_sva_simplified;
++  exprt simplify_sva_expression(const exprt &);
+ 
+   enum class event_guardt { NONE, CLOCK, COMBINATIONAL };
+   
+@@ -379,8 +389,8 @@ protected:
+     class hierarchical_identifier_exprt expr,
+     symbol_statet symbol_state);
+ 
+-  exprt
+-  expand_function_call(const class function_call_exprt &call, symbol_statet);
++  exprt expand_function_call(const class function_call_exprt &call,
++                             symbol_statet, bool isolated_pure_frame = false);
+ 
+   void instantiate_ports(
+     const irep_idt &instance,
+diff --git a/src/verilog/verilog_typecheck.cpp b/src/verilog/verilog_typecheck.cpp
+index b029061..42f6797 100644
+--- a/src/verilog/verilog_typecheck.cpp
++++ b/src/verilog/verilog_typecheck.cpp
+@@ -1869,25 +1869,27 @@ Function: verilog_typecheckt::preresolve_identifiers
+ 
+ void verilog_typecheckt::preresolve_identifiers(exprt &expr)
+ {
+-  expr.visit_pre(
+-    [this](exprt &node)
+-    {
+-      if(node.id() == ID_verilog_identifier)
+-      {
+-        auto &identifier_expr = to_verilog_identifier_expr(node);
+-        auto base_name = identifier_expr.base_name();
+-        auto symbol_ptr = resolve(base_name);
+-        if(symbol_ptr != nullptr)
+-        {
+-          identifier_expr.preresolved(symbol_ptr->name);
+-        }
+-        else
+-        {
+-          throw errort().with_location(node.source_location())
+-            << "unknown identifier " << base_name;
+-        }
+-      }
+-    });
++  if(expr.id() == ID_hierarchical_identifier)
++  {
++    // The right-hand name belongs to the instance/structure on the left,
++    // not the property's declaration scope. Resolve it when that instance
++    // is typechecked; only the leftmost name and its indices are lexical.
++    preresolve_identifiers(to_hierarchical_identifier_expr(expr).lhs());
++  }
++  else if(expr.id() == ID_verilog_identifier)
++  {
++    auto &identifier_expr = to_verilog_identifier_expr(expr);
++    auto base_name = identifier_expr.base_name();
++    auto symbol_ptr = resolve(base_name);
++    if(symbol_ptr != nullptr)
++      identifier_expr.preresolved(symbol_ptr->name);
++    else
++      throw errort().with_location(expr.source_location())
++          << "unknown identifier " << base_name;
++  }
++  else
++    for(auto &operand : expr.operands())
++      preresolve_identifiers(operand);
+ }
+ 
+ /*******************************************************************\
+@@ -1916,6 +1918,8 @@ void verilog_typecheckt::convert_property_declaration(
+   // We'll annotate the scope of the identifiers.
+   // Set function_or_task_name so that resolve() finds the port symbols.
+   function_or_task_name = full_identifier;
++  for(auto &local : declaration.add("#veval_sva_local_decls").get_sub())
++    convert_decl(to_verilog_decl(static_cast<exprt &>(local)));
+   preresolve_identifiers(declaration.cond());
+   function_or_task_name = "";
+ 
+@@ -1950,6 +1954,8 @@ void verilog_typecheckt::convert_sequence_declaration(
+   // We'll annotate the scope of the identifiers.
+   // Set function_or_task_name so that resolve() finds the port symbols.
+   function_or_task_name = full_identifier;
++  for(auto &local : declaration.add("#veval_sva_local_decls").get_sub())
++    convert_decl(to_verilog_decl(static_cast<exprt &>(local)));
+   preresolve_identifiers(declaration.cond());
+   function_or_task_name = "";
+ 
+diff --git a/src/verilog/verilog_typecheck_expr.h b/src/verilog/verilog_typecheck_expr.h
+index 6505f15..f84e8aa 100644
+--- a/src/verilog/verilog_typecheck_expr.h
++++ b/src/verilog/verilog_typecheck_expr.h
+@@ -223,6 +223,7 @@ protected:
+   void must_be_bit_vector(exprt &);
+ 
+   // SVA
++  std::size_t sva_local_instance = 0;
+   void convert_sva(exprt &expr)
+   {
+     expr = convert_sva_rec(std::move(expr));
+diff --git a/src/verilog/verilog_typecheck_sva.cpp b/src/verilog/verilog_typecheck_sva.cpp
+index f747a24..57b94a7 100644
+--- a/src/verilog/verilog_typecheck_sva.cpp
++++ b/src/verilog/verilog_typecheck_sva.cpp
+@@ -485,6 +485,25 @@ exprt verilog_typecheck_exprt::convert_other_sva(exprt expr)
+ 
+ exprt verilog_typecheck_exprt::convert_sva_rec(exprt expr)
+ {
++  if(expr.id() == "#veval_sva_match")
++  {
++    convert_sva(expr.operands().at(0));
++    require_sva_sequence(expr.operands()[0]);
++    for(auto &assignment : expr.operands().at(1).operands())
++    {
++      if(assignment.id() != ID_verilog_blocking_assign ||
++         assignment.operands().size() != 2)
++        throw errort().with_location(assignment.source_location())
++            << "SVA local match item requires a blocking assignment";
++      convert_expr(assignment.operands()[0]);
++      convert_expr(assignment.operands()[1]);
++      implicit_typecast(assignment.operands()[1],
++                        assignment.operands()[0].type());
++      assignment.id("#veval_sva_assign");
++    }
++    expr.type() = verilog_sva_sequence_typet{};
++    return expr;
++  }
+   switch(expr.operands().size())
+   {
+   case 1:
+@@ -573,6 +592,48 @@ exprt verilog_typecheck_exprt::flatten_named_sequence_property(
+ 
+   convert_sva(cond);
+ 
++  // Fresh names per instance preserve lexical scope when one sequence is
++  // used more than once. They are monitor data, never RTL state or ports.
++  std::map<irep_idt, symbol_exprt> locals;
++  exprt declarations{"#veval_sva_declarations"};
++  for(const auto &raw :
++      instance.declaration().find("#veval_sva_local_decls").get_sub())
++  {
++    const auto &declaration = to_verilog_decl(static_cast<const exprt &>(raw));
++    for(const auto &declarator : declaration.declarators())
++    {
++      const auto identifier =
++          id2string(symbol_name) + "." + id2string(declarator.base_name());
++      const auto &symbol = ns.lookup(identifier);
++      auto local = symbol_exprt{identifier + "::sva" +
++                                    std::to_string(sva_local_instance++),
++                                symbol.type};
++      local.set("#veval_sva_local", true);
++      local.set("#veval_sva_local_name", declarator.base_name());
++      locals.emplace(symbol.name, local);
++      exprt entry{"#veval_sva_declaration"};
++      entry.add_to_operands(local);
++      entry.add_to_operands(declarator.value());
++      declarations.add_to_operands(std::move(entry));
++    }
++  }
++  if(!locals.empty())
++  {
++    auto rename = [&](exprt &expression)
++    {
++      if(expression.id() == ID_symbol)
++      {
++        auto found = locals.find(to_symbol_expr(expression).identifier());
++        if(found != locals.end())
++          expression = found->second;
++      }
++    };
++    cond.visit_pre(rename);
++    declarations.visit_pre(rename);
++    auto type = cond.type();
++    cond = exprt{"#veval_sva_locals", type, {cond, declarations}};
++  }
++
+   // Convert the arguments for display purposes
+   for(auto &arg : instance.arguments())
+     convert_expr(arg);

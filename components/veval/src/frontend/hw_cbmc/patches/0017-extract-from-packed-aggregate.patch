@@ -1,0 +1,28 @@
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_lowering.cpp b/third_party/hw-cbmc/src/verilog/verilog_lowering.cpp
+index e478ebd..d1d4d92 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_lowering.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_lowering.cpp
+@@ -66,6 +66,23 @@ exprt extract(
+     return extract(typecast_exprt{src, unsignedbv_typet{1}}, offset, dest_type);
+   }
+ 
++  if(
++    (src.type().id() == ID_array &&
++     src.type().get(ID_C_verilog_type) != ID_verilog_unpacked_array) ||
++    src.type().id() == ID_struct || src.type().id() == ID_union)
++  {
++    // A packed aggregate is a bit-vector underneath, so widen it into one
++    // and extract from that, exactly as the bool case above does. Without
++    // this the preconditions below fail, which is an invariant violation
++    // with a backtrace rather than a diagnostic.
++    auto width = verilog_bits(src.type());
++    return extract(
++      typecast_exprt{
++        src, unsignedbv_typet{numeric_cast_v<std::size_t>(width)}},
++      offset,
++      dest_type);
++  }
++
+   PRECONDITION(src.type().id() != ID_array);
+   PRECONDITION(src.type().id() != ID_struct);
+   PRECONDITION(src.type().id() != ID_union);

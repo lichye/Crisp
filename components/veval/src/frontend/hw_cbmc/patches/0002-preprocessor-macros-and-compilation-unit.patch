@@ -1,0 +1,27 @@
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_preprocessor.h b/third_party/hw-cbmc/src/verilog/verilog_preprocessor.h
+index 091c35e..10f8cfc 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_preprocessor.h
++++ b/third_party/hw-cbmc/src/verilog/verilog_preprocessor.h
+@@ -80,6 +80,22 @@ protected:
+   /// declares -- typically a package -- is then declared twice.
+   static definest compilation_unit_defines;
+ 
++public:
++  /// Begin a fresh compilation unit, discarding the macros of the last one.
++  ///
++  /// One process elaborates one compilation unit in the usual flow, so this
++  /// is never needed there. A tool that elaborates several designs in a row
++  /// -- a parent and then each of its children, say -- must call this
++  /// between them, or the second design finds the first one's include guards
++  /// already set, skips the headers behind them, and fails on the
++  /// declarations it never saw.
++  static void new_compilation_unit()
++  {
++    compilation_unit_defines.clear();
++  }
++
++protected:
++
+   void directive();
+   std::filesystem::path find_include_file(
+     const std::filesystem::path &including_file,

@@ -1,0 +1,19 @@
+diff --git a/third_party/hw-cbmc/lib/cbmc/src/util/simplify_expr_int.cpp b/third_party/hw-cbmc/lib/cbmc/src/util/simplify_expr_int.cpp
+index 0c393ad..b69a495 100644
+--- a/third_party/hw-cbmc/lib/cbmc/src/util/simplify_expr_int.cpp
++++ b/third_party/hw-cbmc/lib/cbmc/src/util/simplify_expr_int.cpp
+@@ -1174,6 +1174,14 @@ simplify_exprt::simplify_power(const power_exprt &expr)
+   if(!base.has_value())
+     return unchanged(expr);
+ 
++  // power() requires a non-negative exponent, and violates a precondition
++  // otherwise -- an invariant failure with a backtrace rather than any
++  // diagnostic. Leave a negative exponent to whoever can give it meaning;
++  // Verilog, for one, defines integer `**` with a negative exponent
++  // (1800-2017 11.4.4) rather than treating it as an error.
++  if(exponent.value() < 0)
++    return unchanged(expr);
++
+   mp_integer result = power(*base, *exponent);
+ 
+   return from_integer(result, expr.type());

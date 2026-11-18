@@ -1,0 +1,105 @@
+diff --git a/third_party/hw-cbmc/src/hw_cbmc_irep_ids.h b/third_party/hw-cbmc/src/hw_cbmc_irep_ids.h
+index 8990301..69b28a0 100644
+--- a/third_party/hw-cbmc/src/hw_cbmc_irep_ids.h
++++ b/third_party/hw-cbmc/src/hw_cbmc_irep_ids.h
+@@ -375,3 +375,4 @@ IREP_ID_ONE(elaborating)
+ IREP_ID_ONE(derive_from_value)
+ IREP_ID_ONE(variables)
+ IREP_ID_ONE(block_id)
++IREP_ID_ONE(C_verilog_xz_sensitive)
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_expr.h b/third_party/hw-cbmc/src/verilog/verilog_expr.h
+index a082590..2665d87 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_expr.h
++++ b/third_party/hw-cbmc/src/verilog/verilog_expr.h
+@@ -217,7 +217,13 @@ public:
+ 
+   exprt lower() const
+   {
+-    return equal_exprt{lhs(), rhs()};
++    // `a === b' and `a == b' lower to the same expression, so a consumer
++    // downstream cannot tell that the author was distinguishing X and Z.
++    // Leave a mark saying what this was. See PROVENANCE.md, patch 0024:
++    // without it a monitor built from `===' silently checks `=='.
++    auto lowered = equal_exprt{lhs(), rhs()};
++    lowered.set(ID_C_verilog_xz_sensitive, "===");
++    return std::move(lowered);
+   }
+ };
+ 
+@@ -251,7 +257,9 @@ public:
+ 
+   exprt lower() const
+   {
+-    return notequal_exprt{lhs(), rhs()};
++    auto lowered = notequal_exprt{lhs(), rhs()};
++    lowered.set(ID_C_verilog_xz_sensitive, "!==");
++    return std::move(lowered);
+   }
+ };
+ 
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_lowering.cpp b/third_party/hw-cbmc/src/verilog/verilog_lowering.cpp
+index d1d4d92..dafbc14 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_lowering.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_lowering.cpp
+@@ -647,12 +647,19 @@ exprt verilog_lowering(exprt expr)
+   else if(expr.id() == ID_verilog_case_equality)
+   {
+     // Result is two-valued, comparing x/z as given.
+-    return to_verilog_case_equality_expr(expr).lower();
++    // Record what it was: after lowering, `a === b' and `a == b' are the
++    // same expression, and a consumer that needs to refuse the first cannot
++    // tell them apart. See PROVENANCE.md, patch 0024.
++    auto lowered = to_verilog_case_equality_expr(expr).lower();
++    lowered.set(ID_C_verilog_xz_sensitive, "===");
++    return lowered;
+   }
+   else if(expr.id() == ID_verilog_case_inequality)
+   {
+     // Result is two-valued, comparing x/z as given.
+-    return to_verilog_case_inequality_expr(expr).lower();
++    auto lowered = to_verilog_case_inequality_expr(expr).lower();
++    lowered.set(ID_C_verilog_xz_sensitive, "!==");
++    return lowered;
+   }
+   else if(expr.id() == ID_verilog_logical_equality)
+   {
+@@ -664,11 +671,15 @@ exprt verilog_lowering(exprt expr)
+   }
+   else if(expr.id() == ID_verilog_wildcard_equality)
+   {
+-    return aval_bval(to_verilog_wildcard_equality_expr(expr));
++    auto lowered = aval_bval(to_verilog_wildcard_equality_expr(expr));
++    lowered.set(ID_C_verilog_xz_sensitive, "==?");
++    return lowered;
+   }
+   else if(expr.id() == ID_verilog_wildcard_inequality)
+   {
+-    return aval_bval(to_verilog_wildcard_inequality_expr(expr));
++    auto lowered = aval_bval(to_verilog_wildcard_inequality_expr(expr));
++    lowered.set(ID_C_verilog_xz_sensitive, "!=?");
++    return lowered;
+   }
+   else if(expr.id() == ID_not)
+   {
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_typecheck_expr.cpp b/third_party/hw-cbmc/src/verilog/verilog_typecheck_expr.cpp
+index 6133ec4..e5f03dc 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_typecheck_expr.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_typecheck_expr.cpp
+@@ -2455,6 +2455,17 @@ exprt verilog_typecheck_exprt::elaborate_constant_system_function_call(
+   {
+     DATA_INVARIANT(arguments.size() == 1, "$isunknown takes one argument");
+ 
++    // Only fold when the argument really is a constant expression. Handing a
++    // variable to elaborate_constant_expression reaches var_value, whose
++    // precondition is `false' in this typechecker, and that aborts the
++    // process rather than reporting anything -- so `$isunknown(some_signal)'
++    // took the whole run down. Giving up here is what the two branches below
++    // already do for every other non-constant case. See PROVENANCE.md,
++    // patch 0024.
++    mp_integer ignored;
++    if(!is_constant_expression(arguments[0], ignored))
++      return std::move(expr); // give up
++
+     auto op = elaborate_constant_expression(arguments[0]);
+ 
+     if(!op.is_constant())

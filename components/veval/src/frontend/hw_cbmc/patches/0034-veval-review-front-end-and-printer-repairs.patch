@@ -1,0 +1,348 @@
+diff --git a/third_party/hw-cbmc/src/verilog/expr2verilog.cpp b/third_party/hw-cbmc/src/verilog/expr2verilog.cpp
+--- a/third_party/hw-cbmc/src/verilog/expr2verilog.cpp
++++ b/third_party/hw-cbmc/src/verilog/expr2verilog.cpp
+@@ -109,26 +109,34 @@
+   auto op1 = convert_rec(src.op1());
+   auto op2 = convert_rec(src.op2());
+ 
+-  if(precedence > op0.p)
++  // veval: each operand is bracketed by its OWN precedence. ?: groups to
++  // the right, so a condition that is itself a ?: needs brackets at equal
++  // precedence: `((c ? x : y) ? a : b)' printed as `c ? x : y ? a : b',
++  // which reads `c ? x : (y ? a : b)'.
++  const bool bracket0 = precedence >= op0.p;
++  const bool bracket1 = precedence > op1.p;
++  const bool bracket2 = precedence > op2.p;
++
++  if(bracket0)
+     dest += '(';
+   dest += op0.s;
+-  if(precedence > op0.p)
++  if(bracket0)
+     dest += ')';
+ 
+   dest+=" ? ";
+ 
+-  if(precedence > op0.p)
++  if(bracket1)
+     dest += '(';
+   dest += op1.s;
+-  if(precedence > op0.p)
++  if(bracket1)
+     dest += ')';
+ 
+   dest+=" : ";
+ 
+-  if(precedence > op0.p)
++  if(bracket2)
+     dest += '(';
+   dest += op2.s;
+-  if(precedence > op0.p)
++  if(bracket2)
+     dest += ')';
+ 
+   return {precedence, dest};
+@@ -296,7 +304,8 @@
+   const auto &id = src.id();
+   const bool associative = id == ID_plus || id == ID_mult ||
+                            id == ID_bitand || id == ID_bitor ||
+-                           id == ID_bitxor || id == ID_and || id == ID_or;
++                           id == ID_bitxor || id == ID_xor || id == ID_and ||
++                           id == ID_or;
+ 
+   forall_operands(it, src)
+   {
+@@ -2485,11 +2494,20 @@
+     { ID_nor, [](expr2verilogt &expr2verilog, const exprt &src) {
+     return expr2verilog.convert_function(src.id_string(), src); } },
+ 
++    // veval: Boolean xor/xnor printed as `xor(a, b)', which is not
++    // SystemVerilog; on one-bit operands the bitwise operators mean the same.
+     { ID_xnor, [](expr2verilogt &expr2verilog, const exprt &src) {
+-    return expr2verilog.convert_function(src.id_string(), src); } },
++    return expr2verilog.convert_binary(
++      to_multi_ary_expr(src), "~^", verilog_precedencet::XOR); } },
+ 
+     { ID_xor, [](expr2verilogt &expr2verilog, const exprt &src) {
+-    return expr2verilog.convert_function(src.id_string(), src); } },
++    return expr2verilog.convert_binary(
++      to_multi_ary_expr(src), "^", verilog_precedencet::XOR); } },
++
++    // veval: `$countones' is lowered to popcount, which printed as an irep
++    // dump; print the SystemVerilog function it came from.
++    { ID_popcount, [](expr2verilogt &expr2verilog, const exprt &src) {
++    return expr2verilog.convert_function("$countones", src); } },
+ 
+     { ID_zero_extend, [](expr2verilogt &expr2verilog, const exprt &src) { 
+     return expr2verilog.convert_rec(to_zero_extend_expr(src).op()); } },
+diff --git a/third_party/hw-cbmc/src/temporal-logic/ltl_to_buechi.cpp b/third_party/hw-cbmc/src/temporal-logic/ltl_to_buechi.cpp
+index 4b066c7..e4f149c 100644
+--- a/third_party/hw-cbmc/src/temporal-logic/ltl_to_buechi.cpp
++++ b/third_party/hw-cbmc/src/temporal-logic/ltl_to_buechi.cpp
+@@ -156,6 +156,23 @@ ltl_to_buechi(const exprt &property, message_handlert &message_handler)
+ 
+     auto hoa = hoat::from_string(hoa_stream.str());
+ 
++    // veval: every acceptance mark below is read as Buechi acceptance, which
++    // is right only for one-set Buechi (`Acceptance: 1 Inf(0)', what --sba
++    // promises). Check the header rather than assume it.
++    {
++      bool buechi = false;
++      for(const auto &item : hoa.header)
++        if(item.first == "Acceptance:")
++        {
++          std::string text;
++          for(const auto &word : item.second)
++            text += word;
++          buechi = text == "1Inf(0)";
++        }
++      if(!buechi)
++        throw ebmc_errort{} << "ltl2tgba did not return a one-set Buechi automaton";
++    }
++
+     message.debug() << hoa << messaget::eom;
+ 
+     // clean up accepting states
+diff --git a/third_party/hw-cbmc/src/verilog/parser.y b/third_party/hw-cbmc/src/verilog/parser.y
+index f69823d..34c10b0 100644
+--- a/third_party/hw-cbmc/src/verilog/parser.y
++++ b/third_party/hw-cbmc/src/verilog/parser.y
+@@ -1633,12 +1633,17 @@ constraint_expression:
+ 
+ dist_list:
+           dist_item
++                { init($$); mto($$, $1); }
+         | dist_list ',' dist_item
++                { $$=$1; mto($$, $3); }
+         ;
+ 
++// veval: the weights only matter to random stimulus; formal tools read
++// `x dist {...}' as `x inside {...}' (1800-2017 16.14.2).
+ dist_item:
+           value_range
+         | value_range dist_weight
++                { $$=$1; }
+         ;
+ 
+ dist_weight:
+@@ -3251,7 +3256,12 @@ property_case_item:
+           expression_or_dist_brace TOK_COLON property_expr ';'
+                 { init($$, ID_case_item); mto($$, $1); mto($$, $3); }
+         | "default" TOK_COLON property_expr ';'
+-                { init($$, ID_case_item); mto($$, $3); }
++                { // veval: a `default' marker as the pattern list, so that the
++                  // result is operand 1 like every other item (it was operand
++                  // 0, and reading the result crashed the typechecker).
++                  init($$, ID_case_item);
++                  stack_expr($$).add_to_operands(exprt(ID_default));
++                  mto($$, $3); }
+         ;
+ 
+ sequence_declaration:
+@@ -3451,6 +3461,7 @@ cycle_delay_const_range_expression:
+ expression_or_dist:
+           expression
+         | expression TOK_DIST '{' dist_list '}'
++                { init($$, ID_verilog_inside); mto($$, $1); mto($$, $4); }
+         ;
+ 
+ // System Verilog standard 1800-2017
+diff --git a/third_party/hw-cbmc/src/verilog/sva_expr.cpp b/third_party/hw-cbmc/src/verilog/sva_expr.cpp
+index 7b9b2d2..4800b3c 100644
+--- a/third_party/hw-cbmc/src/verilog/sva_expr.cpp
++++ b/third_party/hw-cbmc/src/verilog/sva_expr.cpp
+@@ -41,6 +41,26 @@ exprt sva_case_exprt::lower() const
+ {
+   auto &case_items = this->case_items();
+ 
++  // veval: the `default' item applies when no other item matches, wherever
++  // it is written; its empty pattern list used to become `false', so the
++  // default was never taken.
++  for(auto it = case_items.begin(); it != case_items.end(); ++it)
++  {
++    if(it->patterns().empty()) // the `default' item
++    {
++      sva_case_exprt reduced = *this;
++      reduced.case_items().erase(
++        reduced.case_items().begin() + (it - case_items.begin()));
++      exprt rest = reduced.lower();
++      // the innermost else of the remaining chain is `true': replace it
++      exprt *tail = &rest;
++      while(tail->id() == ID_if)
++        tail = &to_if_expr(*tail).false_case();
++      *tail = it->result();
++      return rest;
++    }
++  }
++
+   // base case
+   if(case_items.empty())
+     return true_exprt();
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_elaborate.cpp b/third_party/hw-cbmc/src/verilog/verilog_elaborate.cpp
+index 39b9a99..2827e68 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_elaborate.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_elaborate.cpp
+@@ -1019,7 +1019,15 @@ void verilog_typecheckt::collect_symbols(
+     auto &localparam_decl = to_verilog_local_parameter_decl(module_item);
+     collect_symbols(localparam_decl.type());
+     for(auto &declarator : localparam_decl.declarators())
++    {
+       collect_symbols(localparam_decl.type(), declarator);
++      // veval: mark a localparam, so that a tool restating an instance can
++      // tell the parameters that may be overridden from those that may not.
++      auto *symbol = symbol_table.get_writeable(
++        hierarchical_identifier(declarator.base_name()));
++      if(symbol != nullptr)
++        symbol->is_file_local = true;
++    }
+   }
+   else if(module_item.id() == ID_decl)
+   {
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_synthesis.cpp b/third_party/hw-cbmc/src/verilog/verilog_synthesis.cpp
+index 7b76c14..e0aaae3 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_synthesis.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_synthesis.cpp
+@@ -381,7 +381,13 @@ exprt verilog_synthesist::expand_function_call(
+       auto ticks = call.arguments().size() < 2
+                      ? from_integer(1, integer_typet())
+                      : call.arguments()[1];
+-      return verilog_past_exprt{what, ticks}.with_source_location(call);
++      verilog_past_exprt past{what, ticks};
++      // veval: the gate and clock arguments are not modelled. Mark the
++      // expression so that a consumer can refuse it rather than check the
++      // ungated .
++      if(call.arguments().size() > 2)
++        past.set("#veval_dropped_sampling_arguments", true);
++      return past.with_source_location(call);
+     }
+     else if(
+       base_name == "$stable" || base_name == "$rose" || base_name == "$fell" ||
+@@ -391,6 +397,9 @@ exprt verilog_synthesist::expand_function_call(
+       auto what = synth_expr_rec(call.arguments()[0], symbol_state);
+       auto past = verilog_past_exprt{what, from_integer(1, integer_typet())}
+                     .with_source_location(call);
++      // veval: an explicit clocking argument is not modelled; see .
++      if(call.arguments().size() > 1)
++        past.set("#veval_dropped_sampling_arguments", true);
+ 
+       auto lsb = [](exprt expr) {
+         return extractbit_exprt{
+@@ -2253,6 +2262,15 @@ void verilog_synthesist::synth_force_rec(
+   // get symbol
+   const symbolt &symbol=assignment_symbol(lhs);
+ 
++  continuously_assigned.insert(symbol.name);
++  if(procedurally_assigned.count(symbol.name))
++  {
++    throw errort().with_location(lhs.source_location())
++      << "variable " << symbol.display_name()
++      << " is written by both a continuous assignment and a procedural "
++         "block; not supported";
++  }
++
+   // turn into combinational assignment
+   assignmentt &assignment=assignments[symbol.name];
+ 
+@@ -2310,6 +2328,18 @@ void verilog_synthesist::synth_assign(const verilog_assignt &statement)
+       << "unexpected assignment statement";
+   }
+ 
++  {
++    const symbolt &written = assignment_symbol(statement.lhs());
++    procedurally_assigned.insert(written.name);
++    if(continuously_assigned.count(written.name))
++    {
++      throw errort().with_location(statement.source_location())
++        << "variable " << written.display_name()
++        << " is written by both a continuous assignment and a procedural "
++           "block; not supported";
++    }
++  }
++
+   exprt lhs = statement.lhs();
+   lhs = synth_lhs_expr(lhs);
+ 
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_synthesis_class.h b/third_party/hw-cbmc/src/verilog/verilog_synthesis_class.h
+index 1122ec2..5abcebc 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_synthesis_class.h
++++ b/third_party/hw-cbmc/src/verilog/verilog_synthesis_class.h
+@@ -143,6 +143,11 @@ protected:
+   // indistinguishable by the time the second driver is synthesised, and
+   // whichever driver happens to come second is rejected.
+   std::set<irep_idt> demoted_to_wire;
++  // veval: which variables a continuous assignment and which a procedural
++  // block writes. Both on one variable (`assign stage[0] = ...' beside
++  // `always_comb stage[1] = ...') lost the procedural writes, so it is
++  // refused rather than modelled.
++  std::set<irep_idt> continuously_assigned, procedurally_assigned;
+   
+   // for assumes
+   typedef std::list<exprt> invarst;
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_typecheck_expr.cpp b/third_party/hw-cbmc/src/verilog/verilog_typecheck_expr.cpp
+index 90b4c71..d82e616 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_typecheck_expr.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_typecheck_expr.cpp
+@@ -586,6 +586,10 @@ void verilog_typecheck_exprt::downwards_type_propagation(
+     auto &binary_expr = to_binary_expr(expr);
+     downwards_type_propagation(binary_expr.lhs(), type);
+     expr.type() = type;
++    // veval: `>>>' fills with the sign bit only when the result is signed
++    // (1800-2017 11.4.10); in an unsigned context it is a logical shift.
++    if(expr.id() == ID_ashr && type.id() != ID_signedbv)
++      expr.id(ID_lshr);
+     return;
+   }
+   else if(expr.id() == ID_if)
+@@ -3384,6 +3388,19 @@ exprt verilog_typecheck_exprt::convert_bit_select_expr(
+   if(src.type().id() == ID_array)
+   {
+     auto &array_type = to_array_type(src.type());
++    // veval: the lowering of an index into a PACKED array ignores the
++    // declared offset and direction of its outer range (`pko[1]' over
++    // `logic [2:1][3:0] pko' read the element at zero-based 1). Refused
++    // rather than modelled wrong.
++    if(
++      src.type().get(ID_C_verilog_type) == ID_verilog_packed_array &&
++      (to_verilog_array_type(src.type()).offset() != 0 ||
++       to_verilog_array_type(src.type()).increasing()))
++    {
++      throw errort().with_location(expr.source_location())
++        << "index into a packed array with an offset or ascending outer "
++           "range is not supported";
++    }
+     expr.type() = array_type.element_type();
+   }
+   else
+@@ -4022,6 +4039,16 @@ exprt verilog_typecheck_exprt::convert_trinary_expr(ternary_exprt expr)
+     exprt &src = part_select.src();
+     convert_expr(src);
+ 
++    // veval: a part select on a packed array selects ELEMENTS (`dq[2:1]' of
++    // `logic [3:0][7:0] dq' is 16 bits); the lowering below selects bits.
++    if(
++      src.type().id() == ID_array &&
++      src.type().get(ID_C_verilog_type) == ID_verilog_packed_array)
++    {
++      throw errort().with_location(expr.source_location())
++        << "part select of a packed array is not supported";
++    }
++
+     require_vector(src);
+ 
+     mp_integer src_width = get_width(src.type());
+@@ -4058,6 +4085,15 @@ exprt verilog_typecheck_exprt::convert_trinary_expr(ternary_exprt expr)
+     exprt &src = part_select.src();
+     convert_expr(src);
+ 
++    // veval: as for the non-indexed form, elements and not bits.
++    if(
++      src.type().id() == ID_array &&
++      src.type().get(ID_C_verilog_type) == ID_verilog_packed_array)
++    {
++      throw errort().with_location(expr.source_location())
++        << "part select of a packed array is not supported";
++    }
++
+     require_vector(src);
+ 
+     mp_integer src_width = get_width(src.type());

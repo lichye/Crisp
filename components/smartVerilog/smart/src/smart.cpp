@@ -1,0 +1,392 @@
+#include <iostream>
+#include <filesystem>
+#include <memory>
+#include <vector>
+#include <cassert>
+#include <ctime>
+#include <fstream>
+#include <algorithm>
+namespace fs = std::filesystem;
+
+#include "Trace.h"
+#include "SyGuSGenerater.h"
+#include "State.h"
+#include "StateMaker.h"
+#include "emit/AssertionWriter.h"
+#include "VerilogChecker.h"
+#include "SmtFunctionParser.h"
+#include "Module.h"
+#include "Timer.h"
+#include "setups.h"
+#include <fcntl.h>      
+#include <unistd.h>     
+#include <sys/file.h>  
+#include <sys/types.h>
+#include "Options.h"
+
+//global variables
+int latency = 0;
+std::string sim_path    = "runtime/sim_results";
+std::string smt_path    = "runtime/smt_results";
+std::string ebmcPath = "runtime/formal/formal.sv";
+std::string ebmcReachable = "runtime/formal/reachable.sv";
+std::string moduleName = "";
+std::string mineModule = "";
+std::string injectModule = "";
+std::string verilogSrcPath = "";
+std::string resultFileDir = "";
+std::string generateSMTResultPath();
+std::string initVariables = "";
+std::string currentDir = "";
+std::string core_id = "0";
+std::string Cvc5result;
+std::string configPath;
+std::vector<Signal>* signals;
+SyGuSGenerater* sygus;
+Module* module;
+VerilogChecker* checker;
+StateMaker* stateMaker;
+Timer* timer;
+SmtFunctionParser parser;
+
+//Help function
+void modifySignals(std::string,int mode);
+void intersectionSignals(std::string);
+void printCoreSignals(std::vector<Signal>*);
+bool writeStringToFile(const std::string&, const std::string&,std::ios::openmode);
+bool append_with_lock_posix(const std::string&, const std::string&);
+SygusFunction* parseSygusFunction(const std::string&,SyGuSGenerater*,bool);
+State* createNegativeState();
+
+// One synthesis block, start to finish: load traces, narrow the signals to
+// this block's subset, synthesise a candidate with SyGuS, and refine it
+// against EBMC counterexamples until it verifies or the budget runs out.
+//
+// NOT REENTRANT: everything above is a global. The pipeline runs each block in
+// its own process (see BlockRunner.h for why), so this is called at most once
+// per process.
+namespace smart { namespace pipeline {
+int runSmartBlock(int argc, char* argv[]){
+  // 8 is the historical contract; the two trailing arguments are optional so
+  // an old caller (or a hand-run smart.out) still works unchanged.
+  if(argc<8 || argc>10){
+    print("Usage: smart.out <currentDir> <topmodule> <result_file> <variables_file> <core_id> <latency> <config> [mine_module] [inject_module]\n");
+    return -1;
+  }
+  else{
+    currentDir = argv[1];
+    moduleName = argv[2];
+    resultFileDir = argv[3];
+    initVariables = argv[4];
+    core_id = argv[5];
+    latency = std::stoi(argv[6]);
+    configPath = argv[7];
+    // Optional: the module whose signals are candidates and whose body the
+    // property goes into. Absent means the design top, which is the old
+    // contract and what every existing caller passes.
+    mineModule = argc > 8 ? argv[8] : moduleName;
+    injectModule = argc > 9 ? argv[9] : mineModule;
+  }
+
+  // The same option table the pipeline uses, so a block understands both the
+  // flat schema and the legacy nested one.
+  smart::pipeline::Options options;
+  try{
+    options.mergeJsonFile(configPath);
+    options.validate();
+  }
+  catch(const std::exception& e){
+    print(std::string("Error: ")+e.what());
+    return -1;
+  }
+  if(options.getString("assumption_mining") != "off"){
+    print("Error: assumption_mining=suggest is reserved; the backend is not implemented yet");
+    return -1;
+  }
+  // A block's output goes to its own log file, so the old default verbosity
+  // is what makes that log worth reading.
+  smartVerbosity = 1 + static_cast<int>(options.getInt("verbosity"));
+
+  bool RefinementSet = options.getBool("refinement");
+  bool unboundCheckSet = options.getBool("unbound_check");
+  int boundedDepth = static_cast<int>(options.getInt("block_bound"));
+  int refinementDepth = static_cast<int>(options.getInt("refinement_depth"));
+  int negativeStateNumber = static_cast<int>(options.getInt("negative_state_number"));
+  unsigned seed = static_cast<unsigned>(options.getInt("seed"));
+
+  bool isLTL = (latency > 0);
+  verilogSrcPath = currentDir + "/runtime/verilog/"+moduleName+".sv";
+  // The property goes into the file that DECLARES the target module, which is
+  // not the top's file once the design spans more than one: mining
+  // i2c_master_axil's i2c_master_inst writes into module i2c_master, and that
+  // lives in i2c_master.sv. Every other file is passed to EBMC unchanged, so
+  // pointing the checker at the right one is the whole fix.
+  if(injectModule != moduleName){
+    std::vector<std::string> candidates;
+    try{
+      for(const auto& entry :
+          std::filesystem::directory_iterator(currentDir + "/runtime/verilog")){
+        if(entry.is_regular_file() && entry.path().extension() == ".sv")
+          candidates.push_back(entry.path().string());
+      }
+    }catch(const std::exception&){ }
+    const auto declaring = smart::emit::fileDeclaringModule(candidates, injectModule);
+    if(!declaring.empty()) verilogSrcPath = declaring;
+  }
+  smt_path = currentDir + "/runtime/smt_results/"+core_id;
+  std::string sygusPath = "runtime/smt_results/sygus"+core_id+".sl";
+  fs::create_directory(smt_path);
+  // Blocks of one run must not all draw the same negative states.
+  StateMaker::setSeed(seed + static_cast<unsigned>(std::stoul(core_id.empty() ? "0" : core_id)));
+
+  // Mining the top: the whole subtree below it is candidate material, and the
+  // variables file this block was given already names its share by instance
+  // path. Under --module the mined scope stands alone, exactly as before.
+  const bool hierarchical =
+      options.getBool("hierarchical") && mineModule == moduleName;
+  module = new Module(mineModule, hierarchical);
+  sygus = new SyGuSGenerater();
+  sygus->setSygusTimeoutMs(static_cast<int>(options.getInt("sygus_timeout_ms")));
+  sygus->setUseSubprocess(options.getBool("sygus_subprocess"));
+  sygus->setKeepTempFiles(options.getBool("keep_work"));
+  sygus->setBvPredicateMode(options.getString("bv_predicates"));
+  checker = new VerilogChecker(verilogSrcPath,currentDir,BackEndSolver::EBMC);
+  timer = new Timer();  
+
+
+  checker->setTopModule(moduleName);
+  checker->setInjectModule(injectModule);
+  checker->setTimer(timer);
+  checker->setBound(boundedDepth);
+  checker->setReachabilityBound(
+      static_cast<int>(options.getInt("reachability_bound")));
+  checker->setUnboundCheck(unboundCheckSet);
+  
+  //Read from trace & Generate Signals
+  module->addTracesfromDir(SIM,sim_path);
+  module->addTracesfromDir(SMT,smt_path);
+  signals = module->getAllSignals();
+  modifySignals(initVariables,1);
+  std::sort(signals->begin(),signals->end());
+  sygus->setSignals(signals);
+  checker->setSignals(signals);
+  stateMaker = new StateMaker(signals);
+
+  printCoreSignals(signals);
+  print("In looptime 0:");
+
+  //Add constrains into sygus
+  std::vector<Constrains> constraints = module->getAllConstraints(signals);
+  for(auto &constrain : constraints){
+    sygus->addConstraints(constrain.constraints,constrain.isTrue);
+    sygus->addConstraintComments("Getting constraints from the trace :\t"+constrain.tracePath,constrain.isTrue);
+  }
+
+  //Add random negative states
+  for(int i=0;i<negativeStateNumber;i++){
+    State* negativeState = createNegativeState();
+    sygus->addConstraints(negativeState,false);
+    delete negativeState;
+  }
+
+  if(latency == 0){
+    sygus->printSysgusPath(sygusPath);
+  }
+  else{
+    sygus->printLTLSygusPath(sygusPath,latency);
+  }
+  
+  SygusFunction* sygusfunc = parseSygusFunction(sygusPath, sygus,isLTL);
+  print("\twe get assertion:" + sygusfunc->getBodyVerilogExpr());
+
+  std::string SMTVCDfilePath = generateSMTResultPath();
+  bool verifiedResult = checker->checkExprSafety(sygusfunc,SMTVCDfilePath);
+  print("\tIts correctness is: "+std::to_string(verifiedResult));
+  printDebug("\tTrace goes to VCD file: "+SMTVCDfilePath,1);
+
+  int timeOut = 0;
+  int mostRun = signals->size();
+
+  while(!verifiedResult&&RefinementSet){
+    if(timeOut++>mostRun||verifiedResult||timeOut>refinementDepth){
+      print("Time out\n");
+      break;
+    }
+    print("In looptime "+std::to_string(timeOut)+":");
+    module->addTrace(SMT,SMTVCDfilePath);
+    Constrains c = module->getConstrain(SMTVCDfilePath,signals);
+    Constrains new_c = checker->fixupConstrains(c);
+    sygus->addConstraints(new_c.constraints,c.isTrue);
+    sygus->addConstraintComments("Getting constraints from the trace :\t"+c.tracePath,c.isTrue);
+    if(isLTL){
+      sygus->printLTLSygusPath(sygusPath,latency);
+    }
+    else{
+      sygus->printSysgusPath(sygusPath);
+    }
+    delete sygusfunc;
+    sygusfunc = parseSygusFunction(sygusPath, sygus,isLTL);
+    print("\tGet assertion:" + sygusfunc->getBodyVerilogExpr());
+
+    SMTVCDfilePath = generateSMTResultPath();
+    verifiedResult = checker->checkExprSafety(sygusfunc,SMTVCDfilePath);
+    print("\tIts correctness is: "+std::to_string(verifiedResult));
+    printDebug("\tTrace goes to VCD file: "+SMTVCDfilePath,1);
+
+  }
+  if(verifiedResult){
+    writeStringToFile(resultFileDir,sygusfunc->getBodyVerilogExpr(),std::ios::out);
+    writeStringToFile("runtime/SygusResult.sl",Cvc5result,std::ios::app);
+    writeStringToFile("runtime/CompareResult.txt",sygusfunc->getBodyVerilogExpr()+":\n"+Cvc5result+"\n",std::ios::app);
+    print("Last assertion "+sygusfunc->getBodyVerilogExpr()+" is verified and written to "+resultFileDir);
+  }
+  else{
+    print("All assertion is not verified\n");
+  }
+
+  //append_with_lock_posix("log.txt","This loop's Result: "+std::to_string(verifiedResult)+"\n"+timer->printTime()+"\n");
+  writeStringToFile("log.txt","This "+core_id+" 's Result: "+std::to_string(verifiedResult)+"\n"+timer->printTime()+"\n",std::ios::out|std::ios::app);
+  delete sygusfunc;
+  fs::remove_all(smt_path);
+  return verifiedResult ? 0 : 1;
+}
+}}  // namespace smart::pipeline
+
+std::string generateSMTResultPath(){
+  auto now = std::chrono::system_clock::now();
+
+  std::time_t timeNow = std::chrono::system_clock::to_time_t(now);
+
+  auto duration = now.time_since_epoch();
+  auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() % 1000;
+
+  std::ostringstream oss;
+  oss << std::put_time(std::localtime(&timeNow), "%Y%m%d_%H%M%S") 
+      << "_" << std::setw(3) << std::setfill('0') << millis;
+
+  std::string filename="";
+  filename +=smt_path;
+  filename +="/ebmc_result_";
+  filename += oss.str();
+  filename +=".vcd";
+  return filename;
+}
+
+bool writeStringToFile(const std::string& filename, const std::string& content, std::ios::openmode mode) {
+    // std::ios::openmode mode = std::ios::out | std::ios::app;
+    std::ofstream outfile(filename, mode);
+
+    // std::ofstream outfile(filename); 
+    if (!outfile.is_open()) {        
+        std::cerr << "Error: Unable to open file " << filename << " for writing." << std::endl;
+        return false;
+    }
+    outfile << content; 
+    outfile.close();    
+    return true;     
+}
+
+bool append_with_lock_posix(const std::string& path, const std::string& content) {
+    int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666);
+    if (fd == -1) return false;
+    if (::flock(fd, LOCK_EX) != 0) { ::close(fd); return false; }
+    const char* p = content.data();
+    size_t n = content.size();
+    while (n > 0) {
+        ssize_t w = ::write(fd, p, n);
+        if (w < 0) { ::flock(fd, LOCK_UN); ::close(fd); return false; }
+        p += w; n -= (size_t)w;
+    }
+
+    ::flock(fd, LOCK_UN);
+    ::close(fd);
+    return true;
+}
+
+void modifySignals(std::string removeVariablesPath,int mode){
+  std::vector<std::string> lines;
+  std::ifstream file(removeVariablesPath); // Open the file
+
+  if (!file.is_open()) {
+      std::cerr << "Error: Unable to open file " << removeVariablesPath << std::endl;
+      return;
+      // exit(1);
+      // return lines; // Return an empty vector if the file cannot be opened
+  }
+
+  std::string line;
+  while (std::getline(file, line)) { // Read the file line by line
+      lines.push_back(line); // Add each line to the vector
+  }
+  if(mode == 0){
+    for(auto &line : lines){
+      //if in mode 0, we remove the signal with the same name in file
+      for(auto it = signals->begin(); it != signals->end();){
+
+          if(it->name == line){
+          it = signals->erase(it);
+          }
+          else{
+            ++it;
+          }
+        }
+    }
+  }
+
+  if(mode == 1){
+    // we will keep the signals inside the file
+    std::vector<Signal> tempSignals;
+    for(auto &line : lines){
+      for(auto &signal : *signals){
+        if(signal.name == line){
+          tempSignals.push_back(signal);
+        }
+      }
+    }
+    signals->clear();
+    for(auto &signal : tempSignals){
+      signals->push_back(signal);
+    }
+  }
+
+
+}
+
+SygusFunction* parseSygusFunction(const std::string& sygusPath,SyGuSGenerater* sygus,bool isLTL){
+  SygusFunction* sygusfunc = nullptr;
+  try{
+      timer->start(CVC5_Timer);
+      Cvc5result = sygus->runCVC5Sygus(sygusPath);
+      timer->stop(CVC5_Timer);
+      sygusfunc = (SygusFunction*) parser.parseSmtFunction(Cvc5result, isLTL);
+    }
+    catch(const std::exception& e){
+      timer->stop(CVC5_Timer);
+      writeStringToFile("log.txt","This "+core_id+" 's Result: -1(Sygus infeasible)\n"+timer->printTime()+"\n",std::ios::out|std::ios::app);
+      fs::remove_all(smt_path);
+      exit(-1);
+  }
+  return sygusfunc;
+}
+
+void printCoreSignals(std::vector<Signal>* signals){
+  std::string coreSignals="Core Signals:";
+  for(auto &signal : *signals){
+    coreSignals += "\t" + signal.name;
+  }
+  print(coreSignals);
+}
+
+State* createNegativeState(){
+  State* negativeState = stateMaker->makeRandomState();
+  int loopTime = 0;
+  while(checker->checkStateReachability(negativeState)){
+    sygus->addConstraintComments("Getting constraints from the random state",true);
+    delete negativeState;
+    negativeState = stateMaker->makeRandomState();
+    if(loopTime++>3){
+      break;
+    }
+  }
+  return negativeState;
+}

@@ -1,0 +1,668 @@
+/*******************************************************************\
+
+Module: Typechecking for SVA
+
+Author: Daniel Kroening, kroening@kroening.com
+
+\*******************************************************************/
+
+#include <util/arith_tools.h>
+#include <util/mathematical_types.h>
+#include <util/symbol.h>
+
+#include <temporal-logic/temporal_logic.h>
+
+#include "sva_expr.h"
+#include "verilog_typecheck_expr.h"
+#include "verilog_types.h"
+
+#include <map>
+
+void verilog_typecheck_exprt::require_sva_sequence(exprt &expr)
+{
+  auto &type = expr.type();
+
+  if(type.id() == ID_verilog_sva_sequence)
+  {
+    // good as is
+  }
+  else if(
+    type.id() == ID_bool || type.id() == ID_unsignedbv ||
+    type.id() == ID_signedbv || type.id() == ID_verilog_unsignedbv ||
+    type.id() == ID_verilog_signedbv)
+  {
+    if(
+      has_temporal_operator(expr) || expr.id() == ID_sva_not ||
+      expr.id() == ID_sva_implies || expr.id() == ID_sva_iff)
+    {
+      throw errort().with_location(expr.source_location())
+        << "sequence required, but got property";
+    }
+    else
+    {
+      // state formula, can convert to sequence
+      make_boolean(expr);
+      expr = sva_boolean_exprt{std::move(expr), verilog_sva_sequence_typet{}};
+    }
+  }
+  else if(type.id() == ID_verilog_sva_property)
+  {
+    throw errort().with_location(expr.source_location())
+      << "sequence required, but got property";
+  }
+  else
+  {
+    throw errort().with_location(expr.source_location())
+      << "sequence required, but got " << to_string(type);
+  }
+}
+
+void verilog_typecheck_exprt::require_sva_property(exprt &expr)
+{
+  auto &type = expr.type();
+
+  if(type.id() == ID_verilog_sva_sequence)
+  {
+    // 1800 2017 16.12.2 Sequence property
+    // These yield an implicit weak(...) or strong(...), but we
+    // only know which one once the sequence is used in an assert/assume
+    // or cover.
+    expr = sva_sequence_property_exprt{std::move(expr)};
+  }
+  else if(type.id() == ID_verilog_sva_property)
+  {
+    // good as is
+  }
+  else if(
+    type.id() == ID_bool || type.id() == ID_unsignedbv ||
+    type.id() == ID_signedbv || type.id() == ID_verilog_unsignedbv ||
+    type.id() == ID_verilog_signedbv)
+  {
+    // property or state formula, can cast
+    make_boolean(expr);
+  }
+  else
+  {
+    throw errort().with_location(expr.source_location())
+      << "sequence required, but got " << to_string(type);
+  }
+}
+
+exprt verilog_typecheck_exprt::convert_unary_sva(unary_exprt expr)
+{
+  if(
+    expr.id() == ID_sva_not || expr.id() == ID_sva_always ||
+    expr.id() == ID_sva_s_eventually || expr.id() == ID_sva_nexttime ||
+    expr.id() == ID_sva_s_nexttime)
+  {
+    convert_sva(expr.op());
+    require_sva_property(expr.op());
+    expr.type() = verilog_sva_property_typet{}; // always boolean, never x
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_weak || expr.id() == ID_sva_strong)
+  {
+    convert_sva(expr.op());
+    require_sva_sequence(expr.op());
+    expr.type() = verilog_sva_property_typet{};
+    return std::move(expr);
+  }
+  else
+  {
+    return convert_expr_rec(std::move(expr));
+  }
+}
+
+exprt verilog_typecheck_exprt::convert_binary_sva(binary_exprt expr)
+{
+  if(expr.id() == ID_sva_and || expr.id() == ID_sva_or)
+  {
+    for(auto &op : expr.operands())
+      convert_sva(op);
+
+    // These yield sequences when both operands are sequences, and
+    // properties otherwise.
+    if(
+      expr.lhs().type().id() != ID_verilog_sva_property &&
+      expr.rhs().type().id() != ID_verilog_sva_property)
+    {
+      expr.type() = verilog_sva_sequence_typet{};
+      require_sva_sequence(expr.lhs());
+      require_sva_sequence(expr.rhs());
+    }
+    else
+    {
+      require_sva_property(expr.lhs());
+      require_sva_property(expr.rhs());
+      // always boolean, never x
+      expr.type() = verilog_sva_property_typet{};
+    }
+
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_implies || expr.id() == ID_sva_iff)
+  {
+    convert_sva(expr.lhs());
+    convert_sva(expr.rhs());
+
+    require_sva_property(expr.lhs());
+    require_sva_property(expr.rhs());
+
+    // always boolean, never x
+    expr.type() = verilog_sva_property_typet{};
+
+    return std::move(expr);
+  }
+  else if(
+    expr.id() == ID_sva_disable_iff || expr.id() == ID_sva_accept_on ||
+    expr.id() == ID_sva_reject_on || expr.id() == ID_sva_sync_accept_on ||
+    expr.id() == ID_sva_sync_reject_on)
+  {
+    // The condition of these is special: They are not sampled,
+    // but evaluated directly (1800-2017 16.6).
+    convert_expr(to_sva_abort_expr(expr).condition());
+    make_boolean(to_sva_abort_expr(expr).condition());
+
+    convert_sva(to_sva_abort_expr(expr).property());
+    require_sva_property(to_sva_abort_expr(expr).property());
+    expr.type() = verilog_sva_property_typet{};
+
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_sequence_disable_iff)
+  {
+    auto &disable_iff = to_sva_sequence_disable_iff_expr(expr);
+
+    // The condition of these is special: They are not sampled,
+    // but evaluated directly (1800-2017 16.6).
+    convert_expr(disable_iff.condition());
+    make_boolean(disable_iff.condition());
+
+    convert_sva(disable_iff.sequence());
+    require_sva_sequence(disable_iff.sequence());
+    expr.type() = verilog_sva_sequence_typet{};
+
+    return std::move(expr);
+  }
+  else if(
+    expr.id() == ID_sva_cycle_delay_plus || // ##[+]
+    expr.id() == ID_sva_cycle_delay_star)   // ##[*]
+  {
+    // These take sequences as argument. The LHS is optional.
+    if(expr.lhs().is_not_nil())
+    {
+      convert_sva(expr.lhs());
+      require_sva_sequence(expr.lhs());
+    }
+
+    convert_sva(expr.rhs());
+    require_sva_sequence(expr.rhs());
+
+    expr.type() = verilog_sva_sequence_typet{};
+
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_indexed_nexttime)
+  {
+    convert_expr(to_sva_indexed_nexttime_expr(expr).index());
+
+    auto &op = to_sva_indexed_nexttime_expr(expr).op();
+    convert_sva(op);
+    require_sva_property(op);
+    expr.type() = verilog_sva_property_typet{};
+
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_indexed_s_nexttime)
+  {
+    convert_expr(to_sva_indexed_s_nexttime_expr(expr).index());
+
+    auto &op = to_sva_indexed_s_nexttime_expr(expr).op();
+    convert_sva(op);
+    require_sva_property(op);
+    expr.type() = verilog_sva_property_typet{};
+
+    return std::move(expr);
+  }
+  else if(
+    expr.id() == ID_sva_overlapped_implication ||
+    expr.id() == ID_sva_non_overlapped_implication ||
+    expr.id() == ID_sva_overlapped_followed_by ||
+    expr.id() == ID_sva_nonoverlapped_followed_by)
+  {
+    // These all take a sequence on the LHS, and a property on the RHS.
+    // The grammar allows properties on the LHS to implement and/or over
+    // sequences. Check here that the LHS is a sequence.
+    convert_sva(expr.lhs());
+    require_sva_sequence(expr.lhs());
+
+    convert_sva(expr.rhs());
+    require_sva_property(expr.rhs());
+
+    expr.type() = verilog_sva_property_typet{};
+    return std::move(expr);
+  }
+  else if(
+    expr.id() == ID_sva_until || expr.id() == ID_sva_s_until ||
+    expr.id() == ID_sva_until_with || expr.id() == ID_sva_s_until_with)
+  {
+    convert_sva(expr.lhs());
+    require_sva_property(expr.lhs());
+
+    convert_sva(expr.rhs());
+    require_sva_property(expr.rhs());
+
+    expr.type() = verilog_sva_property_typet{};
+
+    return std::move(expr);
+  }
+  else if(
+    expr.id() == ID_sva_sequence_intersect ||
+    expr.id() == ID_sva_sequence_within)
+  {
+    // This requires a sequence on the LHS.
+    // The grammar allows properties on the LHS to implement and/or over
+    // sequences. Check here that the LHS is a sequence.
+    convert_sva(expr.lhs());
+    require_sva_sequence(expr.lhs());
+
+    convert_sva(expr.rhs());
+    require_sva_sequence(expr.rhs());
+
+    expr.type() = verilog_sva_sequence_typet{};
+
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_sequence_throughout)
+  {
+    // The LHS is a Boolean condition, the RHS a sequence.
+    convert_expr(expr.lhs());
+    make_boolean(expr.lhs());
+
+    convert_sva(expr.rhs());
+    require_sva_sequence(expr.rhs());
+
+    expr.type() = verilog_sva_sequence_typet{};
+
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_sequence_first_match)
+  {
+    auto &first_match_expr = to_sva_sequence_first_match_expr(expr);
+
+    convert_sva(first_match_expr.sequence());
+    require_sva_sequence(first_match_expr.sequence());
+
+    if(first_match_expr.rhs().is_not_nil())
+      convert_expr(first_match_expr.rhs());
+
+    expr.type() = verilog_sva_sequence_typet{};
+
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_case)
+  {
+    auto &case_expr = to_sva_case_expr(expr);
+    convert_expr(case_expr.case_op());
+
+    for(auto &case_item : case_expr.case_items())
+    {
+      // same rules as case statement
+      for(auto &pattern : case_item.patterns())
+      {
+        convert_expr(pattern);
+        typet t = max_type(pattern.type(), case_expr.case_op().type());
+        downwards_type_propagation(pattern, t);
+      }
+
+      convert_sva(case_item.result());
+      require_sva_property(case_item.result());
+    }
+
+    expr.type() = verilog_sva_property_typet{};
+    return std::move(expr);
+  }
+  else
+  {
+    return convert_expr_rec(std::move(expr));
+  }
+}
+
+exprt verilog_typecheck_exprt::convert_ternary_sva(ternary_exprt expr)
+{
+  if(expr.id() == ID_sva_sequence_repetition_star) // x[*1:2]
+  {
+    // This expression takes a sequence as argument.
+    // The grammar allows properties to implement and/or over
+    // sequences. Check here that the argument is a sequence.
+    convert_sva(expr.op0());
+    require_sva_sequence(expr.op0());
+
+    if(expr.op1().is_not_nil())
+      convert_expr(expr.op1());
+
+    if(expr.op2().is_not_nil())
+      convert_expr(expr.op2());
+
+    expr.type() = verilog_sva_sequence_typet{};
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_sequence_repetition_plus) // x[+]
+  {
+    // These take a sequence as argument.
+    // The grammar allows properties to implement and/or over
+    // sequences. Check here that the argument is a sequence.
+    // op1() and op2() are nil.
+    // The forms op[+x] and op[+x:y] do not exist.
+    convert_sva(expr.op0());
+    require_sva_sequence(expr.op0());
+    expr.type() = verilog_sva_sequence_typet{};
+    return std::move(expr);
+  }
+  else if(
+    expr.id() == ID_sva_sequence_non_consecutive_repetition ||
+    expr.id() == ID_sva_sequence_goto_repetition)
+  {
+    // These take a Boolean as argument.
+    convert_expr(expr.op0());
+    make_boolean(expr.op0());
+
+    convert_expr(expr.op1());
+
+    mp_integer n = elaborate_constant_integer_expression(expr.op1());
+    if(n < 0)
+      throw errort().with_location(expr.op1().source_location())
+        << "number of repetitions must not be negative";
+
+    expr.op1() = from_integer(n, integer_typet{});
+
+    if(expr.op2().is_not_nil())
+      convert_expr(expr.op2());
+
+    expr.type() = verilog_sva_sequence_typet{};
+
+    return std::move(expr);
+  }
+  else if(
+    expr.id() == ID_sva_eventually || expr.id() == ID_sva_ranged_s_eventually ||
+    expr.id() == ID_sva_s_always || expr.id() == ID_sva_ranged_always)
+  {
+    auto lower = convert_integer_constant_expression(expr.op0());
+
+    expr.op0() =
+      from_integer(lower, natural_typet()).with_source_location(expr.op0());
+
+    if(expr.op1().id() == ID_infinity)
+    {
+    }
+    else
+    {
+      auto upper = convert_integer_constant_expression(expr.op1());
+      if(lower > upper)
+      {
+        throw errort().with_location(expr.source_location())
+          << "range must be lower <= upper";
+      }
+
+      expr.op1() =
+        from_integer(upper, natural_typet()).with_source_location(expr.op1());
+    }
+
+    convert_sva(expr.op2());
+    require_sva_property(expr.op2());
+    expr.type() = verilog_sva_property_typet{};
+
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_if)
+  {
+    convert_expr(expr.op0());
+    make_boolean(expr.op0());
+
+    convert_sva(expr.op1());
+    require_sva_property(expr.op1());
+
+    if(expr.op2().is_not_nil())
+    {
+      convert_sva(expr.op2());
+      require_sva_property(expr.op2());
+    }
+
+    // These are always property expressions
+    expr.type() = verilog_sva_property_typet{};
+
+    return std::move(expr);
+  }
+  else if(expr.id() == ID_sva_sequence_property_instance)
+  {
+    return flatten_named_sequence_property(
+      to_sva_sequence_property_instance_expr(std::move(expr)));
+  }
+  else
+  {
+    return convert_expr_rec(std::move(expr));
+  }
+}
+
+exprt verilog_typecheck_exprt::convert_other_sva(exprt expr)
+{
+  if(expr.id() == ID_sva_cycle_delay) // ##[1:2] something
+  {
+    expr.type() = verilog_sva_sequence_typet{};
+
+    DATA_INVARIANT(
+      expr.operands().size() == 4, "sva_cycle_delay has four operands");
+
+    // lhs
+    if(expr.operands()[0].is_not_nil())
+    {
+      convert_sva(expr.operands()[0]);
+      require_sva_sequence(expr.operands()[0]);
+    }
+
+    // from
+    convert_expr(expr.operands()[1]);
+    elaborate_constant_expression_check(expr.operands()[1]);
+
+    // to
+    if(expr.operands()[2].is_not_nil())
+    {
+      convert_expr(expr.operands()[2]);
+      elaborate_constant_expression_check(expr.operands()[2]);
+    }
+
+    // rhs
+    convert_sva(expr.operands()[3]);
+    require_sva_sequence(expr.operands()[3]);
+
+    return expr;
+  }
+  else
+  {
+    return convert_expr_rec(std::move(expr));
+  }
+}
+
+exprt verilog_typecheck_exprt::convert_sva_rec(exprt expr)
+{
+  if(expr.id() == "#veval_sva_match")
+  {
+    convert_sva(expr.operands().at(0));
+    require_sva_sequence(expr.operands()[0]);
+    for(auto &assignment : expr.operands().at(1).operands())
+    {
+      if(assignment.id() != ID_verilog_blocking_assign ||
+         assignment.operands().size() != 2)
+        throw errort().with_location(assignment.source_location())
+            << "SVA local match item requires a blocking assignment";
+      convert_expr(assignment.operands()[0]);
+      convert_expr(assignment.operands()[1]);
+      implicit_typecast(assignment.operands()[1],
+                        assignment.operands()[0].type());
+      assignment.id("#veval_sva_assign");
+    }
+    expr.type() = verilog_sva_sequence_typet{};
+    return expr;
+  }
+  switch(expr.operands().size())
+  {
+  case 1:
+    return convert_unary_sva(to_unary_expr(expr));
+  case 2:
+    return convert_binary_sva(to_binary_expr(expr));
+  case 3:
+    return convert_ternary_sva(to_ternary_expr(expr));
+  default:
+    return convert_other_sva(expr);
+  }
+}
+
+/// 1800-2017 F.4.1
+exprt verilog_typecheck_exprt::flatten_named_sequence_property(
+  sva_sequence_property_instance_exprt instance)
+{
+  auto &cond = instance.declaration().cond();
+
+  // Substitute port parameters by actual arguments
+  auto &arguments = instance.arguments();
+  const auto &ports = instance.declaration().ports();
+
+  // Count expected ports
+  std::size_t expected_args = 0;
+  std::size_t required_args = 0;
+  for(auto &port : ports)
+  {
+    for(auto &declarator : port.declarators())
+    {
+      expected_args++;
+      if(!declarator.has_value())
+        required_args++;
+    }
+  }
+
+  if(arguments.size() > expected_args)
+  {
+    throw errort().with_location(instance.symbol().source_location())
+      << "too many arguments for " << instance.symbol().get_identifier()
+      << " (expected " << expected_args << ", got " << arguments.size() << ")";
+  }
+
+  if(arguments.size() < required_args)
+  {
+    throw errort().with_location(instance.symbol().source_location())
+      << "too few arguments for " << instance.symbol().get_identifier()
+      << " (expected at least " << required_args << ", got " << arguments.size()
+      << ")";
+  }
+
+  // Build a map from port identifier to unconverted argument.
+  // Both arguments and default values are not yet converted.
+  auto symbol_name = instance.symbol().get_identifier();
+  std::map<irep_idt, exprt> substitution_map;
+  std::size_t arg_index = 0;
+  for(auto &port : ports)
+  {
+    for(auto &declarator : port.declarators())
+    {
+      auto port_identifier =
+        id2string(symbol_name) + "." + id2string(declarator.base_name());
+      if(arg_index < arguments.size())
+        substitution_map[port_identifier] = arguments[arg_index];
+      else if(declarator.has_value())
+        substitution_map[port_identifier] = declarator.value();
+      arg_index++;
+    }
+  }
+
+  // Substitute port identifiers with actual arguments
+  cond.visit_post(
+    [&](exprt &expr)
+    {
+      if(expr.id() == ID_verilog_identifier)
+      {
+        auto &identifier_expr = to_verilog_identifier_expr(expr);
+        auto it = substitution_map.find(identifier_expr.preresolved());
+        if(it != substitution_map.end())
+        {
+          expr = it->second;
+          return;
+        }
+      }
+    });
+
+  convert_sva(cond);
+
+  // Fresh names per instance preserve lexical scope when one sequence is
+  // used more than once. They are monitor data, never RTL state or ports.
+  std::map<irep_idt, symbol_exprt> locals;
+  exprt declarations{"#veval_sva_declarations"};
+  for(const auto &raw :
+      instance.declaration().find("#veval_sva_local_decls").get_sub())
+  {
+    const auto &declaration = to_verilog_decl(static_cast<const exprt &>(raw));
+    for(const auto &declarator : declaration.declarators())
+    {
+      const auto identifier =
+          id2string(symbol_name) + "." + id2string(declarator.base_name());
+      const auto &symbol = ns.lookup(identifier);
+      auto local = symbol_exprt{identifier + "::sva" +
+                                    std::to_string(sva_local_instance++),
+                                symbol.type};
+      local.set("#veval_sva_local", true);
+      local.set("#veval_sva_local_name", declarator.base_name());
+      locals.emplace(symbol.name, local);
+      exprt entry{"#veval_sva_declaration"};
+      entry.add_to_operands(local);
+      entry.add_to_operands(declarator.value());
+      declarations.add_to_operands(std::move(entry));
+    }
+  }
+  if(!locals.empty())
+  {
+    auto rename = [&](exprt &expression)
+    {
+      if(expression.id() == ID_symbol)
+      {
+        auto found = locals.find(to_symbol_expr(expression).identifier());
+        if(found != locals.end())
+          expression = found->second;
+      }
+    };
+    cond.visit_pre(rename);
+    declarations.visit_pre(rename);
+    auto type = cond.type();
+    cond = exprt{"#veval_sva_locals", type, {cond, declarations}};
+  }
+
+  // Convert the arguments for display purposes
+  for(auto &arg : instance.arguments())
+    convert_expr(arg);
+
+  if(instance.symbol().type().id() == ID_verilog_sva_named_sequence)
+  {
+    require_sva_sequence(cond);
+    instance.type() = verilog_sva_sequence_typet{};
+  }
+  else if(instance.symbol().type().id() == ID_verilog_sva_named_property)
+  {
+    require_sva_property(cond);
+    instance.type() = verilog_sva_property_typet{};
+  }
+  else
+    PRECONDITION(false);
+
+  return instance;
+}
+
+exprt verilog_typecheck_exprt::instantiate_named_sequence_property(
+  const symbolt &symbol,
+  source_locationt location)
+{
+  auto symbol_expr = symbol.symbol_expr().with_source_location(location);
+  auto &declaration =
+    to_verilog_sequence_property_declaration_base(symbol.value);
+  auto instance =
+    sva_sequence_property_instance_exprt{symbol_expr, {}, declaration};
+  instance.add_source_location() = std::move(location);
+  return flatten_named_sequence_property(std::move(instance));
+}

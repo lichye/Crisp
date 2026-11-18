@@ -1,0 +1,81 @@
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_preprocessor.cpp b/third_party/hw-cbmc/src/verilog/verilog_preprocessor.cpp
+index a573e59..b6bccd2 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_preprocessor.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_preprocessor.cpp
+@@ -186,14 +186,12 @@ void verilog_preprocessort::preprocessor()
+ {
+   bool error_found = false;
+ 
+-  // Inherit what earlier files in this compilation unit defined, and hand on
+-  // what this one defines, however it ends.
++  // Inherit what earlier files in this compilation unit defined. What this
++  // file defines is handed on by the `define, `undef and `undefineall
++  // handlers as they run, so the table carries only the macros the source
++  // text itself set or removed; the initial defines below belong to this
++  // file's command line and are not handed on.
+   defines = compilation_unit_defines;
+-  struct save_definest
+-  {
+-    const definest &defines;
+-    ~save_definest() { compilation_unit_defines = defines; }
+-  } save_defines{defines};
+ 
+   try
+   {
+@@ -554,6 +552,9 @@ void verilog_preprocessort::directive()
+ 
+     tokenizer().in_macro_text = false;
+ 
++    // hand it on to the following files of the compilation unit
++    compilation_unit_defines[identifier] = define;
++
+ #ifdef DEBUG
+     std::cout << "DEFINE: >" << identifier << "< = >";
+     for(auto &t : define.tokens)
+@@ -591,6 +592,9 @@ void verilog_preprocessort::directive()
+       // found it! remove it!
+       defines.erase(it);
+     }
++
++    // and from the following files of the compilation unit
++    compilation_unit_defines.erase(identifier);
+   }
+   else if(text == "undefineall")
+   {
+@@ -598,6 +602,7 @@ void verilog_preprocessort::directive()
+       return;
+ 
+     defines.clear();
++    compilation_unit_defines.clear();
+   }
+   else if(text=="ifdef" || text=="ifndef")
+   {
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_preprocessor.h b/third_party/hw-cbmc/src/verilog/verilog_preprocessor.h
+index 10f8cfc..d413917 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_preprocessor.h
++++ b/third_party/hw-cbmc/src/verilog/verilog_preprocessor.h
+@@ -70,7 +70,7 @@ protected:
+   using definest = std::unordered_map<std::string, definet, string_hash>;
+   definest defines;
+ 
+-  /// Text macros defined so far in this compilation unit.
++  /// Text macros the source text of this compilation unit has defined so far.
+   ///
+   /// 1800-2017 22.5.1: a `define is in effect from where it appears to the
+   /// end of the compilation unit, which by default is every file named on
+@@ -78,6 +78,15 @@ protected:
+   /// carrying the table across them an include guard cannot do its job: a
+   /// header included from two files is expanded twice, and whatever it
+   /// declares -- typically a package -- is then declared twice.
++  ///
++  /// Only `define, `undef and `undefineall in the source text change this
++  /// table. The initial defines a preprocessor is constructed with belong to
++  /// that file's command line: they are applied to the file (a persisted
++  /// source-text macro of the same name wins) and are not handed on, so a
++  /// caller that preprocesses files under different command-line options,
++  /// as a tool script does, sees the same macro state Yosys's read_verilog
++  /// would: source-text macros persist across files and commands,
++  /// command-line macros do not.
+   static definest compilation_unit_defines;
+ 
+ public:

@@ -1,0 +1,78 @@
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_lowering.h b/third_party/hw-cbmc/src/verilog/verilog_lowering.h
+index d6b6eb5..3e552a8 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_lowering.h
++++ b/third_party/hw-cbmc/src/verilog/verilog_lowering.h
+@@ -18,4 +18,7 @@ typet verilog_lowering(typet);
+ 
+ exprt verilog_lowering_cast(typecast_exprt);
+ 
++/// Flatten a packed aggregate into the bit-vector it is underneath.
++exprt to_bitvector(const exprt &);
++
+ #endif
+diff --git a/third_party/hw-cbmc/src/verilog/verilog_simplifier.cpp b/third_party/hw-cbmc/src/verilog/verilog_simplifier.cpp
+index 8388ccf..3136334 100644
+--- a/third_party/hw-cbmc/src/verilog/verilog_simplifier.cpp
++++ b/third_party/hw-cbmc/src/verilog/verilog_simplifier.cpp
+@@ -8,6 +8,9 @@ Author: Daniel Kroening, dkr@amazon.com
+ 
+ #include "verilog_simplifier.h"
+ 
++#include "verilog_bits.h"
++#include "verilog_lowering.h"
++
+ #include <util/arith_tools.h>
+ #include <util/bitvector_expr.h>
+ #include <util/mathematical_types.h>
+@@ -204,6 +207,51 @@ static exprt verilog_simplifier_rec(exprt expr, const namespacet &ns)
+     }
+   }
+ 
++  else if(
++    (expr.id() == ID_struct || expr.id() == ID_union ||
++     expr.id() == ID_array) &&
++    !expr.operands().empty())
++  {
++    // A packed aggregate whose members are all constants IS a constant
++    // expression, but nothing about a struct_exprt says so -- is_constant()
++    // is false for it however its members were written. Flatten it into the
++    // bit-vector it is underneath, which the check below then folds. Without
++    // this, `parameter cfg_t C = '0' is rejected as not constant, and every
++    // package that declares a zeroed configuration is unusable.
++    if(operands_are_constant && expr.type().id() != ID_array)
++    {
++      // Concatenate the members that are already in hand rather than going
++      // through to_bitvector: that builds a member_exprt against the struct's
++      // declared component types, and simplifying the operands first may have
++      // changed them, which trips an invariant deep in the generic simplifier
++      // instead of producing a diagnostic.
++      exprt::operandst parts;
++      parts.reserve(expr.operands().size());
++      bool flattenable = true;
++
++      for(auto &op : expr.operands())
++      {
++        if(!can_cast_type<bitvector_typet>(op.type()) &&
++           op.type().id() != ID_bool)
++        {
++          flattenable = false;
++          break;
++        }
++        parts.push_back(
++          op.type().id() == ID_bool
++            ? static_cast<exprt>(typecast_exprt{op, unsignedbv_typet{1}})
++            : op);
++      }
++
++      if(flattenable && !parts.empty())
++      {
++        auto width = numeric_cast_v<std::size_t>(verilog_bits(expr.type()));
++        expr = simplify_expr(
++          concatenation_exprt{std::move(parts), bv_typet{width}}, ns);
++      }
++    }
++  }
++
+   // We fall back to the simplifier to approximate
+   // the standard's definition of 'constant expression'.
+   auto simplified_expr = simplify_expr(expr, ns);
