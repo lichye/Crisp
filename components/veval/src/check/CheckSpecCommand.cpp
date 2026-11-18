@@ -24,11 +24,12 @@ static int run(int argc, char **argv) {
     const auto startedWall = wallTime();
     if (argc == 3 && std::string(argv[2]) == "--help") {
         std::cout << "veval check DESIGN.sby [TASK] [--out DIR] [--resume]\n"
+                     "  --keep-work          retain the solver models and counterexample waveforms\n"
                      "  --wall-cap S         cumulative active limit, tightened by SBY timeout\n"
                      "  --whole-design PATH  assert the inferred single root matches PATH\n"
                      "  --lowering DIR       reuse a veval lower bundle (default: shared sibling cache)\n"
                      "  --strategy auto|deepest|all-depth|top  which landings to check (default: auto)\n"
-                     "  --placement single-path|split  module landing policy (default: single-path)\n"
+                     "  --placement single-path|split|root  module landing policy (default: single-path)\n"
                      "  Strategy and placement can also be set in [options] as\n"
                      "  veval_strategy and veval_placement; a command-line value wins.\n"
                      "  auto/deepest check the deepest landing on every generated branch.\n"
@@ -50,18 +51,19 @@ static int run(int argc, char **argv) {
     // Unset strategy/placement fall back to the task, then to defaults.
     std::string selected, whole, placement, strategy, lowering;
     std::vector<std::string> chosen;
-    double wall = 0; bool resume = false;
+    double wall = 0; bool resume = false, keepWork = false;
     for (int i = 3; i < argc; ++i) {
         std::string arg = argv[i];
         auto next = [&] { require(i + 1 < argc, "missing value for " + arg); return std::string(argv[++i]); };
         if (arg == "--out") process.out = fs::absolute(next()).lexically_normal();
         else if (arg == "--resume") resume = true;
+        else if (arg == "--keep-work") keepWork = true;
         else if (arg == "--inprocess-prove") throw std::runtime_error("the built-in EBMC solver has been removed; use the SBY check workflow");
         else if (arg == "--wall-cap") wall = positive(next());
         else if (arg == "--whole-design") whole = next();
         else if (arg == "--lowering") lowering = fs::absolute(next()).lexically_normal().string();
         else if (arg == "--reuse") throw std::runtime_error("proof reuse/lifting has been removed; omit --reuse");
-        else if (arg == "--placement") { placement = next(); require(placement == "single-path" || placement == "split", "invalid placement"); }
+        else if (arg == "--placement") { placement = next(); require(placement == "single-path" || placement == "split" || placement == "root", "invalid placement"); }
         else if (arg == "--property") {
             chosen.push_back(next());
             require(!chosen.back().empty() && chosen.back().find_first_of(". \t") == std::string::npos,
@@ -114,6 +116,7 @@ static int run(int argc, char **argv) {
         {"whole_design", str(whole)}, {"placement", str(placement)}, {"inprocess_prove", boolean(false)},
         {"lowering",str(lowering)},
         {"wall_cap_s", num(wall)}});
+    if (keepWork) put(configuration, "keep_work", boolean(true));
     Journal journal(process, configuration, resume, started, startedWall);
     process.timeOrigin = monotonic() - journal.elapsed();
     if (wall) process.deadline = monotonic() + wall - journal.elapsed();

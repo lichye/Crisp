@@ -316,7 +316,9 @@ std::vector<InstanceEdge> connectionMap(
         if (moduleSymbol != nullptr && moduleSymbol->type.id() == ID_module)
             for (const auto& port : to_module_type(moduleSymbol->type).ports()) {
                 const auto name = frontend::displayName(id2string(port.identifier()));
-                edge.ports.insert(name.substr(name.rfind('.') + 1));
+                const auto local = name.substr(name.rfind('.') + 1);
+                edge.ports.insert(local);
+                if (port.input()) edge.inputs.insert(local);
             }
 
         result.push_back(std::move(edge));

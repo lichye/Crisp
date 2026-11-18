@@ -114,8 +114,8 @@ CommandLineOptions parseArgs(int argc, const char* const* argv) {
             invocation.environmentProfile = next();
         } else if (arg == "--placement") {
             invocation.placement = next();
-            if (invocation.placement != "single-path" && invocation.placement != "split")
-                throw std::runtime_error("--placement must be single-path or split");
+            if (invocation.placement != "single-path" && invocation.placement != "split" && invocation.placement != "root")
+                throw std::runtime_error("--placement must be single-path, split or root");
         } else if (arg == "--environment-allowlist") {
             invocation.environmentAllowlist = next();
         } else if (arg == "--config") {

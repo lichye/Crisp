@@ -153,9 +153,9 @@ GenerationConfig readGenerationConfig(const std::string& path) {
             } else if (key == "placement") {
                 once(config.placement.has_value());
                 const auto placement = asString(path, number, key, value);
-                if (placement != "single-path" && placement != "split")
+                if (placement != "single-path" && placement != "split" && placement != "root")
                     fail(path, number,
-                         "placement must be single-path or split, not `" +
+                         "placement must be single-path, split or root, not `" +
                              placement + "'");
                 config.placement = placement;
             } else {

@@ -57,7 +57,7 @@ struct CommandLineOptions {
     std::vector<std::string> assertionLabels;
     std::string environmentProfile = "full";
     std::string environmentAllowlist;
-    // `--placement single-path|split': see lowering::singlePathPlacement.
+    // `--placement single-path|split|root': see lowering::singlePathPlacement.
     std::string placement = "single-path";
     // `--config FILE': the run's settings file. Parsed after the command
     // line and applied OVER it -- see GenerationConfig.h for why that direction.

@@ -116,22 +116,20 @@ int runSmartBlock(int argc, char* argv[]){
 
   bool isLTL = (latency > 0);
   verilogSrcPath = currentDir + "/runtime/verilog/"+moduleName+".sv";
-  // The property goes into the file that DECLARES the target module, which is
-  // not the top's file once the design spans more than one: mining
-  // i2c_master_axil's i2c_master_inst writes into module i2c_master, and that
-  // lives in i2c_master.sv. Every other file is passed to EBMC unchanged, so
-  // pointing the checker at the right one is the whole fix.
-  if(injectModule != moduleName){
+  // A prepared compilation unit can have a different name from its module.
+  if(injectModule != moduleName || !fs::is_regular_file(verilogSrcPath)){
     std::vector<std::string> candidates;
-    try{
-      for(const auto& entry :
-          std::filesystem::directory_iterator(currentDir + "/runtime/verilog")){
-        if(entry.is_regular_file() && entry.path().extension() == ".sv")
-          candidates.push_back(entry.path().string());
-      }
-    }catch(const std::exception&){ }
-    const auto declaring = smart::emit::fileDeclaringModule(candidates, injectModule);
-    if(!declaring.empty()) verilogSrcPath = declaring;
+    for(const auto& entry : fs::directory_iterator(currentDir + "/runtime/verilog")){
+      const auto ext = entry.path().extension();
+      if(entry.is_regular_file() && (ext == ".sv" || ext == ".v"))
+        candidates.push_back(entry.path().string());
+    }
+    std::sort(candidates.begin(), candidates.end());
+    verilogSrcPath = smart::emit::fileDeclaringModule(candidates, injectModule);
+    if(verilogSrcPath.empty()){
+      std::cerr << "Cannot find the source declaring module " << injectModule << "\n";
+      return 2;
+    }
   }
   smt_path = currentDir + "/runtime/smt_results/"+core_id;
   std::string sygusPath = "runtime/smt_results/sygus"+core_id+".sl";

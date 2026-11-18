@@ -474,6 +474,13 @@ static int run(const Arguments &args) {
             {"liftable",J()},{"reason",str(decision.verdict=="refuted"
                 ?"native backend premise audit completed; waveform export disabled":"no counterexample retained")}})},
         {"attempt_dir",str(dir.string())}});
+    if (args.has("--keep-work") && decision.verdict == "refuted") {
+        const auto &audit = record["premise_audit"];
+        if (text(audit["outcome"]) == "all-premises-hold" && !items(audit["traces_audited"]).empty())
+            put(result, "trace", object({{"raw", audit["traces_audited"]}, {"normalized", J()},
+                {"status", str("retained")}, {"liftable", J()},
+                {"reason", str("module counterexample verified against the compiled premises")}}));
+    }
     validateShape(result,"result");
     save(dir/"result.json",result);
     if(args.has("--db")&&!id.empty()) {

@@ -59,7 +59,7 @@ VerilogChecker::VerilogChecker(std::string verilogSrcPath,std::string homePath,B
         for (const auto& entry : fs::directory_iterator(relatePath)) {
             if (entry.is_regular_file()) {
                 auto path = entry.path();
-                if (path.extension() == ".sv" && path != verilogSrcPath) {
+                if ((path.extension() == ".sv" || path.extension() == ".v") && path != verilogSrcPath) {
                     relatedFilePaths.push_back(path);
                 }
             }

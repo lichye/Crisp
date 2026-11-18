@@ -2,10 +2,9 @@
 
 **C**ompositional **R**TL **I**nvariant **S**ynthesis and **P**roof.
 
-The current checkout provides `./crisp mine`, `./crisp lower` and `./crisp check`.
-The token example shows how to mine an invariant and how to lower and prove a property on the same RTL. [Build and run the example](docs/quickstart.md)
+`./crisp verify` connects veval's property decomposition with SMART's invariant mining. When a module's induction step stays open, Crisp mines candidate lemmas, proves each one on the module's saved model and retries the property. The token example exercises all four combinations of splitting and mining. [Build and run](docs/quickstart.md) · [M1 results](docs/report-m1.md)
 
-Sections 0–3 describe the research goal and first milestone. Automatic reuse of mined lemmas in module proofs is still open. Section 5 holds the project rules and section 6 lists decisions for Leiqi.
+The individual commands `./crisp mine`, `./crisp lower` and `./crisp check` are also available. Sections 0–3 describe the research goal and M1. Section 5 records the project rules and section 6 lists decisions for Leiqi.
 
 ## 0. Read this first
 
@@ -72,7 +71,7 @@ Splitting and helper-lemma generation are capabilities of that one tool, and the
 crisp verify ... --split on|off --lemmas on|off
 ```
 
-With both switches off, Crisp checks the whole design directly.
+With splitting off, the specification wrapper binds its properties to the intact DUT. With splitting on, veval selects the module instances to check. Both switches default to `on`.
 Each capability also runs alone: mining proved assertions for a design, or splitting a property and stopping there.
 
 Soundness rules. A run that breaks one of them is a bug.

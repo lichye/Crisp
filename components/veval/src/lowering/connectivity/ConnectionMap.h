@@ -88,6 +88,7 @@ struct InstanceEdge {
 
     // Declared port names; bindings may also contain internal assignments.
     std::set<std::string> ports;
+    std::set<std::string> inputs;
 };
 
 // Compare names, types and parameter values with a standalone elaboration.

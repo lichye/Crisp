@@ -427,6 +427,7 @@ int workflow(Process &p, Journal &journal) {
             std::cout << "check " << text(row["source_entry"]) << " at " << text(row["instance"]) << std::endl;
             std::vector<std::string> attempt{nativeHelper(binary, "consflow_engine", "CONSFLOW_ENGINE"),
                 "run", "--job", (jobs / text(row["file"])).string(), "--out", (p.out / "attempts").string()};
+            if (truth(config["keep_work"])) attempt.push_back("--keep-work");
 #ifdef __APPLE__
             attempt.push_back("--inherit-process-session");
 #endif

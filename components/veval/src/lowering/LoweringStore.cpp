@@ -220,7 +220,7 @@ void restoreLowering(const fs::path &bundle,const fs::path &transport,const J &i
 int lowerMain(int argc,char **argv) {
     try {
         if(argc==3 && std::string(argv[2])=="--help") {
-            std::cout<<"veval lower DESIGN.sby [TASK] --out BUNDLE [-j N] [--placement single-path|split]\n"
+            std::cout<<"veval lower DESIGN.sby [TASK] --out BUNDLE [-j N] [--placement single-path|split|root]\n"
                 "Generate all properties once; no solver is run. Existing identical bundles are reused.\n"
                 "-j N or -jN sets the worker limit for module synthesis, property lowering and output preparation (default 1).\n"
                 "--generation-threads N is an alias for -j N.\n"
@@ -248,7 +248,7 @@ int lowerMain(int argc,char **argv) {
             }
             else {require(task.empty() && a[0]!='-',"unexpected argument: "+a);task=a;}}
         require(!out.empty(),"--out is required");
-        require(placement.empty()||placement=="single-path"||placement=="split","invalid placement");
+        require(placement.empty()||placement=="single-path"||placement=="split"||placement=="root","invalid placement");
         Process p;p.root=fs::path(VEVAL_WORKFLOW_ROOT);p.out=out.parent_path()/(".lower-prepare-"+std::to_string(::getpid()));
         fs::create_directories(p.out);
         const auto input=prepareTask(p,fs::canonical(argv[2]),task);

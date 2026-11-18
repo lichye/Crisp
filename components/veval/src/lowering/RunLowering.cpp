@@ -7,6 +7,7 @@
 #include "lowering/environment/LocalEnvironment.h"
 #include "util/database/SavedVerdicts.h"
 #include "lowering/output/ExportLoweringResults.h"
+#include "lowering/output/WriteLocalSpecs.h"
 #include "util/files/AtomicOutput.h"
 #include <ebmc/transition_system.h>
 #include <util/namespace.h>
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <sstream>
 #include <vector>
 #include <filesystem>
@@ -25,6 +27,24 @@ namespace generation = veval::profile;
 namespace veval::cli {
 
 namespace {
+
+// A whole-DUT proof must preserve the wrapper's actual input environment.
+bool directWrapperInputs(const lowering::InstanceEdge& dut, const transition_systemt& system) {
+    std::set<std::string> connected;
+    std::set<irep_idt> available;
+    for (const auto& input : system.inputs()) available.insert(input.get_identifier());
+    for (const auto& binding : dut.bindings) {
+        const auto port = id2string(binding.port.get_identifier());
+        const auto local = port.substr(port.rfind('.') + 1);
+        if (binding.isOutput || !dut.inputs.count(local)) continue;
+        if (binding.parentExpr.id() != ID_symbol || binding.parentExpr.type() != binding.port.type())
+            return false;
+        const auto id = to_symbol_expr(binding.parentExpr).get_identifier();
+        if (!available.erase(id)) return false;
+        connected.insert(local);
+    }
+    return connected == dut.inputs;
+}
 
 // The design a stored verdict was decided on, by CONTENT: init, invar and
 // trans of the elaborated design, which hold no property. Comments
@@ -118,6 +138,17 @@ int runLowering(const CommandLineOptions& invocation) {
     auto edges = generation::timed("design.connection-map", [&] {
         return veval::lowering::connectionMap(design.transitionSystem());
     });
+    // The formal wrapper still binds its ports to the whole DUT. With root
+    // placement, none of the edges inside that DUT are proof boundaries.
+    if (invocation.placement == "root") {
+        edges.erase(std::remove_if(edges.begin(), edges.end(), [](const auto& edge) {
+            return !edge.parentInstance.empty();
+        }), edges.end());
+        if (edges.size() != 1 || !directWrapperInputs(edges.front(), design.transitionSystem())) {
+            std::cerr << "root placement requires one DUT with distinct, directly wired wrapper inputs\n";
+            return 2;
+        }
+    }
     auto aliases = generation::timed("design.aliases", [&] {
         return veval::lowering::signalAliases(design.transitionSystem());
     });
@@ -140,6 +171,28 @@ int runLowering(const CommandLineOptions& invocation) {
         return veval::lowering::lowerProperties(set, edges, aliases, attribution, blackboxes,
                                               &stoppedAbove, invocation.generationThreads.value_or(1), &definitions);
     });
+    if (invocation.placement == "root") {
+        std::set<std::string> boundAssumptions;
+        for (auto& row : transports) {
+            row.isAssumptionHere = row.isAssumption;
+            if (row.abortDropped || !lowering::isTier1(row)) row.placed = false;
+            if (row.placed && row.isAssumption &&
+                (row.isResetContract || lowering::usableAsAssumption(row)))
+                boundAssumptions.insert(row.property);
+        }
+        for (const auto& item : set.monitors) {
+            if (item.isAssumption && !boundAssumptions.count(item.property)) {
+                std::cerr << "whole-DUT wrapper could not bind assumption " << item.property << "\n";
+                return 2;
+            }
+        }
+        for (const auto& item : set.unsupported) {
+            if (item.isAssumption) {
+                std::cerr << "whole-DUT wrapper has unsupported assumption " << item.property << "\n";
+                return 2;
+            }
+        }
+    }
     generation::Phase preparation("products.prepare");
     // Disclose authored assumptions over driven nets without changing them.
     auto authoredOverDriven =

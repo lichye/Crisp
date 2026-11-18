@@ -20,9 +20,7 @@ struct GenerationConfig {
     std::optional<unsigned long> symEvalConeCap;
     std::optional<double> symEvalTimeoutSeconds;
     std::optional<std::string> environmentProfile;
-    // `single-path' (the paper's placement rule, the default) or `split' (every
-    // landing kept, assumptions by direction included; runs before
-    // 2026-10-21). See lowering::singlePathPlacement.
+    // single-path (default), split (all landings), or root (the whole DUT).
     std::optional<std::string> placement;
 
     // Parsed, validated, recorded -- and not used. The engine adapter is a

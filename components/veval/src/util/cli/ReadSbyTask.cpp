@@ -70,7 +70,7 @@ Input prepareTask(Process &process, const fs::path &source, const std::string &s
     const std::map<std::string, std::set<std::string>> choices{
         {"multiclock", {"on", "off"}},
         {"veval_strategy", {"auto", "deepest", "all-depth", "top"}},
-        {"veval_placement", {"single-path", "split"}}};
+        {"veval_placement", {"single-path", "split", "root"}}};
     for (const auto &row : sections["options"]) {
         auto fields = split(row); if (fields.empty()) continue;
         const auto key = fields[0];

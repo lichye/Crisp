@@ -2,7 +2,7 @@ JOBS ?= 4
 SMART := components/smartVerilog
 VEVAL := components/veval
 
-.PHONY: build smart veval
+.PHONY: build smart veval example
 build: smart veval
 
 smart:
@@ -12,3 +12,6 @@ smart:
 veval:
 	cmake -S "$(VEVAL)" -B "$(VEVAL)/build" -DCMAKE_BUILD_TYPE=Release
 	cmake --build "$(VEVAL)/build" --parallel "$(JOBS)"
+
+example:
+	python3 examples/token/reproduce.py
