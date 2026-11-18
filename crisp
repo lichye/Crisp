@@ -28,7 +28,12 @@ if [[ ! -x "$program" ]]; then
     exit 2
 fi
 
-for dir in "${OSS_CAD_BIN:-$HOME/.local/oss-cad-suite/bin}" "$HOME/.local/spot/bin"; do
+bundled_suite="$root/components/smartVerilog/.deps/oss-cad-suite/bin"
+if [[ -z ${OSS_CAD_BIN:-} && -x "$bundled_suite/yosys-config" ]]; then
+    export OSS_CAD_BIN="$bundled_suite"
+fi
+if [[ -n ${OSS_CAD_BIN:-} ]]; then PATH="$OSS_CAD_BIN:$PATH"; fi
+for dir in "$HOME/.local/oss-cad-suite/bin" "$HOME/.local/spot/bin"; do
     if [[ -d "$dir" ]]; then PATH="$PATH:$dir"; fi
 done
 export PATH

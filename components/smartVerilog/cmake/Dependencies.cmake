@@ -10,7 +10,7 @@ set(HWCBMC_CBMC_DIR ${HWCBMC_DIR}/lib/cbmc)
 
 if(NOT EXISTS ${HWCBMC_CBMC_DIR}/src)
     message(FATAL_ERROR
-        "hw-cbmc is not installed under ${HWCBMC_DIR}. Run ./install.sh, "
+        "hw-cbmc is not installed under ${HWCBMC_DIR}. Run 'make deps' from the Crisp repository root, then retry the build, "
         "or pass -DSMART_DEPS_ROOT=<dependency-prefix>.")
 endif()
 
@@ -18,7 +18,7 @@ find_path(NLOHMANN_INCLUDE_DIR nlohmann/json.hpp
     HINTS ${SMART_DEPS_ROOT}/include)
 if(NOT NLOHMANN_INCLUDE_DIR)
     message(FATAL_ERROR
-        "nlohmann/json.hpp not found. Run ./install.sh, or place it under "
+        "nlohmann/json.hpp not found. Run 'make deps' from the Crisp repository root, or place it under "
         "${SMART_DEPS_ROOT}/include.")
 endif()
 
@@ -40,7 +40,7 @@ set(HWCBMC_EBMC ${HWCBMC_DIR}/src/ebmc/ebmc)
 # read-only by configuring SMART_DEPS_ROOT.
 foreach(artifact IN LISTS HWCBMC_LIBS HWCBMC_EBMC)
     if(NOT EXISTS "${artifact}")
-        message(FATAL_ERROR "Missing ${artifact}. Build the pinned hw-cbmc with ./install.sh or point SMART_DEPS_ROOT at a complete installation.")
+        message(FATAL_ERROR "Missing ${artifact}. Run 'make deps' from the Crisp repository root or point SMART_DEPS_ROOT at a complete installation.")
     endif()
 endforeach()
 

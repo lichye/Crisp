@@ -19,9 +19,12 @@ class VerifyTests(unittest.TestCase):
     def verify_token(self, directory, spec, *options):
         args = ["verify", str(ROOT / "examples/token/rtl/token.sv"), "--top", "token_formal",
                 "--spec", str(spec), "--out", str(directory), *options]
-        suite = os.environ.get("OSS_CAD_BIN", str(Path.home() / ".local/oss-cad-suite/bin"))
-        tools = os.pathsep.join([os.environ["PATH"], suite, str(Path.home() / ".local/spot/bin")])
-        with patch.object(sys, "argv", args), patch.dict(os.environ, PATH=tools), contextlib.redirect_stdout(io.StringIO()):
+        bundled = ROOT / "components/smartVerilog/.deps/oss-cad-suite/bin"
+        default = bundled if (bundled / "yosys-config").is_file() else Path.home() / ".local/oss-cad-suite/bin"
+        suite = os.environ.get("OSS_CAD_BIN") or str(default)
+        path = os.pathsep.join([suite, os.environ["PATH"], str(Path.home() / ".local/spot/bin")])
+        env = {"OSS_CAD_BIN": suite, "PATH": path}
+        with patch.object(sys, "argv", args), patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
             code = verify.main()
         return code, json.loads((directory / "report.json").read_text())
 

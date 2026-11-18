@@ -2,8 +2,11 @@ JOBS ?= 4
 SMART := components/smartVerilog
 VEVAL := components/veval
 
-.PHONY: build smart veval example
+.PHONY: build deps smart veval example
 build: smart veval
+
+deps:
+	JOBS="$(JOBS)" ./$(SMART)/install.sh --deps-only
 
 smart:
 	cmake -S "$(SMART)" -B "$(SMART)/build" -DCMAKE_BUILD_TYPE=Release $(if $(SMART_DEPS_ROOT),-DSMART_DEPS_ROOT="$(abspath $(SMART_DEPS_ROOT))") $(if $(CVC5_ROOT),-DCVC5_ROOT="$(abspath $(CVC5_ROOT))")

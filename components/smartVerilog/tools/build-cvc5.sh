@@ -26,10 +26,12 @@ if [ ! -d "$src" ]; then
     git clone --depth 1 --branch "cvc5-$version" https://github.com/cvc5/cvc5.git "$src"
 fi
 
-# cvc5's build runs Python code generators that need these. Installing them
-# for the user lets us pass --no-python-venv below, which is the difference
-# between needing the python3-venv package and not.
-python3 -m pip install --user --quiet pyparsing tomli || true
+# Keep code-generator dependencies local on systems with an externally managed Python.
+python_deps="$here/otherTools/cvc5-python"
+export PYTHONPATH="$python_deps${PYTHONPATH:+:$PYTHONPATH}"
+if ! python3 -c 'import pyparsing, tomli' 2>/dev/null; then
+    python3 -m pip install --disable-pip-version-check --target "$python_deps" pyparsing tomli
+fi
 
 # libpoly, one of cvc5's downloaded dependencies, still declares
 # cmake_minimum_required(VERSION <3.5), which CMake 4 refuses outright.

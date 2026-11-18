@@ -26,8 +26,8 @@ namespace {
 namespace fs = std::filesystem;
 
 // Make the tools that live in this checkout visible without the user having
-// to arrange it. install.sh builds ebmc into .deps/ and unpacks
-// iverilog into otherTools/, both of which sit at a known place relative to
+// to arrange it. install.sh places EBMC and the OSS CAD Suite in .deps/,
+// while libcvc5 lives in otherTools/. Both sit at a known place relative to
 // the binary — so `./build/smart design.sv` works straight after an install,
 // which is what the ReadMe promises. An explicit PATH still wins: these are
 // appended, never prepended.
@@ -42,6 +42,7 @@ void addBundledToolsToPath(const std::string& self) {
         root / ".deps/hw-cbmc/src/ebmc",
         SMART_EBMC_DIR,
         root / "otherTools/cvc5/bin",
+        root / ".deps/oss-cad-suite/bin",
         root / "otherTools/oss-cad-suite/bin",
     };
 

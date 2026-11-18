@@ -4,20 +4,30 @@ Two registers hold a token. They start as `1` and `0` and exchange values on an 
 
 ## Build
 
-Run these commands from the Crisp root. The local build can reuse the dependencies already installed beside the original smartVerilog checkout.
+Run the following from the Crisp repository root. On Ubuntu 24.04, these packages provide the host compiler, build tools and development headers.
+
+```sh
+sudo apt-get update
+sudo apt-get install build-essential cmake flex bison git curl patch ca-certificates python3-pip libsqlite3-dev libssl-dev
+```
+
+On a fresh Linux x86-64 checkout, install the project dependencies as your regular user and then compile. The first command downloads and builds the pinned hw-cbmc (including EBMC) and cvc5, and installs the OSS CAD Suite used by both components.
+
+```sh
+make deps && make build
+```
+
+If a previous build stopped with `hw-cbmc is not installed`, run the same commands in your existing checkout. Later builds only need `make build`. Both steps accept `JOBS=N` to control build parallelism. Crisp installs OSS CAD Suite 2026-09-01 under `components/smartVerilog/.deps/`. This release can load plugins built with Ubuntu 24.04's GCC 13. To reuse a compatible installation, export its absolute bin path (for example, `export OSS_CAD_BIN=/opt/oss-cad-suite/bin`) before setup and use the same setting at runtime.
+
+For `verify`, `lower`, `check` and `make example`, install Spot and put `ltl2tgba` on `PATH`. The saved M1 run used Spot 2.15.1 and OSS CAD Suite 2025-06-04. [Spot installation](https://spot.lre.epita.fr/install.html) · [Component credits](../PROVENANCE.md)
+
+If you already have complete SMART dependencies in another checkout, you can point the build at them directly. `SMART_DEPS_ROOT` contains the built `hw-cbmc/` tree and `include/nlohmann/json.hpp`. `CVC5_ROOT` contains the cvc5 headers and libraries. With matching Yosys development headers available, the build command is
 
 ```sh
 make build SMART_DEPS_ROOT=../smartVerilog/.deps CVC5_ROOT=../smartVerilog/otherTools/cvc5
 ```
 
-On a fresh Linux host, install a C++17 compiler, CMake, Make, Flex, Bison, the SQLite3 and OpenSSL development headers, and the tools used by SMART's installer (Git, curl and Python with pip). Install Spot and an OSS CAD Suite with matching Yosys development headers. Put their `bin/` directories on `PATH` and set `OSS_CAD_BIN` to the suite's `bin/` directory. The local run used OSS CAD Suite 2025-06-04 and Spot 2.15.1. SMART's installer sets up its hw-cbmc and cvc5 dependencies.
-
-```sh
-(cd components/smartVerilog && ./install.sh)
-make build
-```
-
-`make veval` builds lowering and checking independently. EBMC is required for SMART's default final proof. [Component credits](../PROVENANCE.md)
+`make veval` builds the veval component independently.
 
 ## Verify
 

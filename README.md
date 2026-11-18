@@ -12,13 +12,13 @@ Each report associates a module instance and a source assertion with the verdict
 
 ## Quick start
 
-Install the required dependencies, then build Crisp from the repository root. [Dependency and setup guide](docs/quickstart.md)
+On a fresh Linux server, install the host build tools listed in the setup guide. From the Crisp root, fetch the pinned tool dependencies once and build both components. [Host packages and setup](docs/quickstart.md#build)
 
 ```sh
-make build
+make deps && make build
 ```
 
-The repository ships one small token example. Two registers start with one token between them and swap values on an enabled step. The assertion checks that they are never both high when sampled. [Token RTL](examples/token/rtl/token.sv) · [Specification wrapper](examples/token/spec.sv)
+The repository ships one small token example. Two registers start with one token between them and swap values on an enabled step. The assertion checks that they are never both high when sampled. To run it, put Spot's `ltl2tgba` on `PATH`. [Token RTL](examples/token/rtl/token.sv) · [Specification wrapper](examples/token/spec.sv)
 
 ```sh
 ./crisp verify examples/token/rtl/token.sv --top token_formal --spec examples/token/spec.sv

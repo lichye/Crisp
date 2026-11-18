@@ -15,8 +15,8 @@ find_library(CVC5_LIBRARY cvc5 HINTS ${CVC5_ROOT}/lib64 ${CVC5_ROOT}/lib)
 find_library(CVC5_PARSER_LIBRARY cvc5parser HINTS ${CVC5_ROOT}/lib64 ${CVC5_ROOT}/lib)
 if(NOT CVC5_INCLUDE_DIR OR NOT CVC5_LIBRARY OR NOT CVC5_PARSER_LIBRARY)
     message(FATAL_ERROR
-        "libcvc5 not found under ${CVC5_ROOT}. Build it once with "
-        "tools/build-cvc5.sh, or pass -DCVC5_ROOT=<prefix>.")
+        "libcvc5 not found under ${CVC5_ROOT}. Run 'make deps' from the Crisp repository root, "
+        "or pass -DCVC5_ROOT=<prefix>.")
 endif()
 
 add_library(cvc5_api INTERFACE)

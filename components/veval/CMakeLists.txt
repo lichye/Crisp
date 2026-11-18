@@ -131,8 +131,16 @@ target_link_libraries(consflow_array_observation PRIVATE veval_check_inputs)
 add_dependencies(veval consflow_array_observation)
 add_executable(consflow_live_trace ${VEVAL_SRC}/util/sby/ReadLivenessTrace.cpp)
 add_dependencies(veval consflow_live_trace)
-find_program(VEVAL_YOSYS_CONFIG yosys-config
-    PATHS "$ENV{HOME}/.local/oss-cad-suite/bin")
+set(suite_bin "$ENV{OSS_CAD_BIN}")
+set(bundled_suite "${CMAKE_CURRENT_SOURCE_DIR}/../smartVerilog/.deps/oss-cad-suite/bin")
+if(NOT suite_bin AND EXISTS "${bundled_suite}/yosys-config")
+    set(suite_bin "${bundled_suite}")
+endif()
+if(suite_bin)
+    set(VEVAL_YOSYS_CONFIG "${suite_bin}/yosys-config")
+else()
+    find_program(VEVAL_YOSYS_CONFIG yosys-config PATHS "$ENV{HOME}/.local/oss-cad-suite/bin")
+endif()
 if(VEVAL_YOSYS_CONFIG)
     execute_process(COMMAND "${VEVAL_YOSYS_CONFIG}" --datdir
         OUTPUT_VARIABLE VEVAL_YOSYS_DATDIR OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -141,14 +149,17 @@ if(VEVAL_YOSYS_CONFIG)
         message(FATAL_ERROR "Cannot query ${VEVAL_YOSYS_CONFIG} --datdir. Use yosys-config from the Yosys installation that will run veval's plugins.")
     endif()
 endif()
-find_path(VEVAL_YOSYS_INCLUDE kernel/yosys.h
-    HINTS "${VEVAL_YOSYS_DATDIR}/include" "$ENV{HOME}/.local/oss-cad-suite/share/yosys/include")
+if(suite_bin)
+    set(VEVAL_YOSYS_INCLUDE "${VEVAL_YOSYS_DATDIR}/include")
+else()
+    find_path(VEVAL_YOSYS_INCLUDE kernel/yosys.h
+        HINTS "${VEVAL_YOSYS_DATDIR}/include" "$ENV{HOME}/.local/oss-cad-suite/share/yosys/include")
+endif()
 if(NOT VEVAL_YOSYS_INCLUDE OR NOT EXISTS "${VEVAL_YOSYS_INCLUDE}/kernel/yosys.h")
     message(FATAL_ERROR
-        "Yosys development headers are required to build veval's runtime plugins. "
-        "Install the development headers matching your Yosys executable and put yosys-config on PATH, "
-        "or configure with -DVEVAL_YOSYS_INCLUDE=/path/to/yosys/include. "
-        "A Yosys executable alone is not enough; no complete veval build was produced.")
+        "Missing Yosys plugin headers under ${VEVAL_YOSYS_INCLUDE}. Run 'make deps' from the Crisp root "
+        "or set OSS_CAD_BIN to a complete suite. For a standalone header installation, "
+        "configure with -DVEVAL_YOSYS_INCLUDE=/path/to/yosys/include.")
 endif()
 message(STATUS "Yosys plugin headers: ${VEVAL_YOSYS_INCLUDE}")
 if(VEVAL_YOSYS_INCLUDE)
@@ -179,7 +190,13 @@ if(VEVAL_YOSYS_INCLUDE)
         file(STRINGS "${VEVAL_YOSYS_INCLUDE}/kernel/yosys_common.h" VEVAL_YOSYS_REQUIRES_CXX20
             REGEX "C[+][+]20 or later compatible compiler is required")
     endif()
+    get_filename_component(yosys_bin_dir "${VEVAL_YOSYS_CONFIG}" DIRECTORY)
     foreach(plugin consflow_observation consflow_live2safety consflow_environment consflow_relations)
+        if(NOT CMAKE_CROSSCOMPILING AND EXISTS "${yosys_bin_dir}/yosys")
+            add_custom_command(TARGET ${plugin} POST_BUILD
+                COMMAND "${yosys_bin_dir}/yosys" -Q -T -q -m "$<TARGET_FILE:${plugin}>" -p stat
+                COMMENT "Loading ${plugin} in the selected Yosys" VERBATIM)
+        endif()
         if(VEVAL_YOSYS_REQUIRES_CXX20 OR EXISTS "${VEVAL_YOSYS_INCLUDE}/kernel/twine.h")
             set_target_properties(${plugin} PROPERTIES CXX_STANDARD 20)
         endif()
