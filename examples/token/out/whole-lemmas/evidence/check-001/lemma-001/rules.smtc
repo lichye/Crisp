@@ -1,2 +1,0 @@
-always
-assert (= (not [u_dut.state.right]) [u_dut.state.left])

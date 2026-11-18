@@ -1,7 +1,0 @@
-always
-assume (= (not [u_dut.state.right]) [u_dut.state.left])
-assume (=> [u_dut.clk] [u_dut.state.clk])
-assume (=> [u_dut.sample] [u_dut.state.sample])
-assume (=> [u_dut.state.sample] [u_dut.sample])
-assume (=> [u_dut.state.swap] [u_dut.enable])
-assume (=> [u_dut.state.swap] [u_dut.step])

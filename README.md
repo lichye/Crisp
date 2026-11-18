@@ -1,40 +1,45 @@
 # Crisp
 
-Crisp (Compositional RTL Invariant Synthesis and Proof) is a toolkit for checking RTL properties and mining invariants. veval lowers SystemVerilog assertions into module-level obligations and checks them. smartVerilog provides SMART assertion mining and MAPminer parallel mining. SMART uses EBMC, the third-party model checker from the hw-cbmc project. [Component provenance](PROVENANCE.md)
-
-Crisp's command-line and verification code lives in `src/`. The tools in `components/` build as separate executables. Run `./crisp mine` to mine assertions, `./crisp lower` to generate module obligations, or `./crisp check` to verify them.
-
-## Verification prototype
-
-`./crisp verify` calls the component executables to check a property and try mined lemmas. `--top` names the specification wrapper. The switches `--split on|off` and `--lemmas on|off` work independently and both default to `on`.
-
-With splitting enabled, veval selects module-level proof obligations. With splitting off, it checks the intact design under test. If the induction step stays open on an eligible single-clock safety property and lemma synthesis is enabled, SMART mines candidate invariants. Crisp independently proves each supported one-bit, single-frame predicate on the same module model under the original premises. It retries the property using only the predicates it proved.
-
-Each report associates a module instance and a source assertion with the verdict, premises and proof evidence. [Token example report](examples/token/out/split-lemmas/report.json)
-
-## Quick start
-
-On Ubuntu 24.04 x86-64, install the host build tools and development headers.
+Crisp is a model checker for SystemVerilog designs. Run the Linux x86-64 release binary on a file containing an assertion.
 
 ```sh
-sudo apt-get update
+./crisp design.sv
+```
+
+Crisp finds the top-level modules and checks the assertions in the elaborated design using the EBMC engine linked into the executable. Use `--top MODULE` to select a particular root. The terminal and a plain-text file in `log/` show each verdict and any counterexample. The default time limit is 60 seconds. Use `--budget SECONDS` to change it, `--out DIRECTORY` to select a log directory, or `--log FILE.log` to name a new log.
+
+The release includes one self-contained example. Running `./crisp token.sv` proves that the two registers never hold the token simultaneously when sampled. A failed assertion exits with 1, an input or engine error with 2, and an inconclusive check, timeout or design without assertions with 3. A completed proof of all assertions exits with 0.
+
+## Component workflows
+
+The optional `components.tar.gz` beside the binary supplies SMART, veval, SBY, the matching Yosys tools and their runtime dependencies. Crisp opens it in a temporary system directory when a component command runs. [Component provenance](components/PROVENANCE.md)
+
+| Command | Result in the text log |
+| --- | --- |
+| `./crisp mine design.sv` | Assertions mined by SMART |
+| `./crisp lower task.sby` | Lowered properties and the module instance for each |
+| `./crisp check task.sby` | veval module verdicts and counterexamples |
+| `./crisp verify design.sv --top wrapper --spec spec.sv` | Selected module checks and independent proofs of the SMART lemmas used in a retry |
+
+For `verify`, `--split on|off` controls module decomposition and `--lemmas on|off` controls mining. Both default to `on` for this command. A reported proof is scoped to the selected module and its recorded premises.
+
+## Build from source
+
+To build only the standalone checker, install a C++17 compiler, GNU Make, Flex, Bison, Git, curl and patch. The build fetches pinned engine sources into a private build cache.
+
+```sh
+make binary
+./build/crisp examples/token/token.sv
+```
+
+For the component workflows on Ubuntu 24.04 x86-64, install the host development packages and put Spot's `ltl2tgba` on `PATH`. [Spot installation](https://spot.lre.epita.fr/install.html)
+
+```sh
 sudo apt-get install build-essential cmake flex bison git curl patch ca-certificates python3-pip libsqlite3-dev libssl-dev
-```
-
-From the Crisp root, fetch the pinned dependencies once and build both components.
-
-```sh
 make deps && make build
-```
-
-The repository ships one small token example. Two registers start with one token between them and swap values on an enabled step. The assertion checks that they are never both high when sampled. To run it, put Spot's `ltl2tgba` on `PATH`. [Spot installation](https://spot.lre.epita.fr/install.html) · [Token RTL](examples/token/rtl/token.sv) · [Specification wrapper](examples/token/spec.sv)
-
-```sh
-./crisp verify examples/token/rtl/token.sv --top token_formal --spec examples/token/spec.sv
-```
-
-The command writes `crisp-out/run.*/report.json`. To run all four switch combinations and compare them in `crisp-out/token.*/summary.json`, use the example target.
-
-```sh
+make test
 make example
+make release
 ```
+
+`make release` creates `release/crisp` for single-file checking and `release/crisp-linux-x86_64.tar.gz` with the optional component workflows and token example. `./crisp --licenses` prints the notices for the standalone binary.

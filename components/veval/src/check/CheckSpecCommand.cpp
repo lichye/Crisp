@@ -47,7 +47,7 @@ static int run(int argc, char **argv) {
     require(argc >= 3, "usage: veval check DESIGN.sby [TASK] [--out DIR]");
     const auto source = fs::canonical(argv[2]);
     require(source.extension() == ".sby", "veval check expects a .sby file");
-    Process process; process.root = fs::path(VEVAL_WORKFLOW_ROOT);
+    Process process; process.root = veval::util::command_runner::env("CONSFLOW_WORKFLOW_ROOT", VEVAL_WORKFLOW_ROOT);
     // Unset strategy/placement fall back to the task, then to defaults.
     std::string selected, whole, placement, strategy, lowering;
     std::vector<std::string> chosen;

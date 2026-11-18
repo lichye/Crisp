@@ -249,7 +249,7 @@ int lowerMain(int argc,char **argv) {
             else {require(task.empty() && a[0]!='-',"unexpected argument: "+a);task=a;}}
         require(!out.empty(),"--out is required");
         require(placement.empty()||placement=="single-path"||placement=="split"||placement=="root","invalid placement");
-        Process p;p.root=fs::path(VEVAL_WORKFLOW_ROOT);p.out=out.parent_path()/(".lower-prepare-"+std::to_string(::getpid()));
+        Process p;p.root=veval::util::command_runner::env("CONSFLOW_WORKFLOW_ROOT",VEVAL_WORKFLOW_ROOT);p.out=out.parent_path()/(".lower-prepare-"+std::to_string(::getpid()));
         fs::create_directories(p.out);
         const auto input=prepareTask(p,fs::canonical(argv[2]),task);
         completed(p.run("source-preparation",{binary.string(),"__check-source",(p.out/"task/source-request.json").string(),(p.out/"task/prepared").string()}), true);

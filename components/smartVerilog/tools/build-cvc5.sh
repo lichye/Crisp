@@ -29,7 +29,7 @@ fi
 # Keep code-generator dependencies local on systems with an externally managed Python.
 python_deps="$here/otherTools/cvc5-python"
 export PYTHONPATH="$python_deps${PYTHONPATH:+:$PYTHONPATH}"
-if ! python3 -c 'import pyparsing, tomli' 2>/dev/null; then
+if ! python3 -m pip show pyparsing >/dev/null 2>&1 || ! python3 -m pip show tomli >/dev/null 2>&1; then
     python3 -m pip install --disable-pip-version-check --target "$python_deps" pyparsing tomli
 fi
 

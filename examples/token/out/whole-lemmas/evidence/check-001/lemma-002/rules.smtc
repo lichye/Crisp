@@ -1,2 +1,0 @@
-always
-assert (=> [u_dut.clk] [u_dut.state.clk])

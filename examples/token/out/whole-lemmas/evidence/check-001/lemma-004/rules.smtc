@@ -1,2 +1,0 @@
-always
-assert (=> [u_dut.state.sample] [u_dut.sample])

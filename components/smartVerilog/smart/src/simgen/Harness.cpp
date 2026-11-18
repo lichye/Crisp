@@ -353,7 +353,9 @@ SimResult runSimulations(const frontend::ModuleInfo& info,
         if (!out) throw std::runtime_error("cannot write " + tbPath.string());
         out << renderTestbench(info, options);
 
-        compile << helper::shellQuote(options.iverilog) << " -g2012 -o "
+        // The simulation supplies mining traces. Authored assertions are checked
+        // later on the original sources by the formal engine.
+        compile << helper::shellQuote(options.iverilog) << " -g2012 -gno-assertions -s tb -o "
                 << helper::shellQuote(simPath.string());
         // Both the stripped copies (for `include "sibling.sv"` between them)
         // and the original directory, for includes we did not copy.

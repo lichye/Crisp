@@ -97,6 +97,11 @@ add_executable(veval ${VEVAL_SRC}/main.cpp)
 add_dependencies(veval consflow_jobs consflow_engine consflow_sby consflow_constants consflow_process)
 target_link_libraries(veval PRIVATE veval_cli)
 
+# The suite builds its driver against the same database and process libraries.
+if(CRISP_DRIVER_SOURCE_DIR)
+    add_subdirectory("${CRISP_DRIVER_SOURCE_DIR}" crisp)
+endif()
+
 # Large elaborated designs allocate many small immutable expression nodes.
 # Opt in explicitly; only the veval executable uses this allocator. In
 # particular, do not preload it into external solvers or Yosys plugins.
@@ -142,6 +147,7 @@ else()
     find_program(VEVAL_YOSYS_CONFIG yosys-config PATHS "$ENV{HOME}/.local/oss-cad-suite/bin")
 endif()
 if(VEVAL_YOSYS_CONFIG)
+    set(VEVAL_BUILD_YOSYS_CONFIG "${VEVAL_YOSYS_CONFIG}" CACHE INTERNAL "Yosys used to build the plugins")
     execute_process(COMMAND "${VEVAL_YOSYS_CONFIG}" --datdir
         OUTPUT_VARIABLE VEVAL_YOSYS_DATDIR OUTPUT_STRIP_TRAILING_WHITESPACE
         RESULT_VARIABLE VEVAL_YOSYS_CONFIG_STATUS)
