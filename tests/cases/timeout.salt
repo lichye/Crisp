@@ -1,0 +1,11 @@
+[files]
+multiply.sv
+
+[design]
+top multiply
+
+[options]
+mode bdd
+
+[resource]
+timeout 1

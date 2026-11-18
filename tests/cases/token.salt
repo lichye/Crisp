@@ -1,0 +1,24 @@
+[tasks]
+prove
+induction
+bounded
+bug
+
+[files]
+../../examples/token/rtl/token.sv
+prove: ../../examples/token/spec.sv
+induction: ../../examples/token/spec.sv
+bounded: ../../examples/token/spec.sv
+bug: token-bug.sv
+
+[design]
+top token_formal
+
+[options]
+mode bdd
+induction:
+mode kind
+depth 5
+bounded:
+mode bmc
+depth 10

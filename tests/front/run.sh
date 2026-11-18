@@ -22,6 +22,11 @@ if [[ -r /proc/self/status ]]; then
     }' /proc/self/status)
 fi
 "$root/build/tests/test-front" ../cases "$capture/errors" "$cpus"
+cat > "$scratch/cases/rtl/fifo.sv" <<'SV'
+module fifo(input wire clk, input wire rst_n);
+    p_front: assert property (@(posedge clk) 1'b1);
+endmodule
+SV
 
 snapshot() {
     (cd -- "$scratch" && find work cases -print0 | LC_ALL=C sort -z)
@@ -51,8 +56,8 @@ for file in fifo.salt fifo-crlf.salt; do
     cli 0 "../cases/$file"
     grep -Fxq task1 "$capture/out"
     grep -Fxq task2 "$capture/out"
-    [[ $(grep -c 'not implemented' "$capture/out") == 2 ]]
-    [[ $(tail -n 1 "$capture/out") == "2 tasks prepared" ]]
+    [[ $(grep -c 'fifo.p_front  proved' "$capture/out") == 2 ]]
+    [[ $(tail -n 1 "$capture/out") == "2 tasks, 2 proved, 0 refuted, 0 unknown" ]]
 done
 cli 0 ../cases/fifo.salt task2
 grep -Fxq task2 "$capture/out"

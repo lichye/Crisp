@@ -1,0 +1,5 @@
+[files]
+empty.sv
+
+[design]
+define CHECK_CONSTANT

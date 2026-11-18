@@ -1,0 +1,23 @@
+[tasks]
+correct
+bug
+ic3
+
+[files]
+counter.sv
+
+[design]
+top counter
+correct:
+define STOP 9
+bug:
+define STOP 10
+ic3: define STOP 10
+
+[options]
+correct:
+mode kind
+depth 5
+bug:
+mode bdd
+ic3: mode pdr

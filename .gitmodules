@@ -1,0 +1,4 @@
+[submodule "src/components/hw-cbmc"]
+	path = src/components/hw-cbmc
+	url = https://github.com/lichye/ebmc.git
+	ignore = untracked

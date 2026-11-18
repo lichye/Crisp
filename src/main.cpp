@@ -1,4 +1,5 @@
 #include "front/front.hpp"
+#include "check/run.hpp"
 
 #include <iostream>
 
@@ -39,10 +40,6 @@ void print_task(const Task& task) {
     std::cout << ", timeout " << task.timeout_seconds.value << "s\n";
 }
 
-void verify(const Task&) {
-    std::cout << "  verify   not implemented\n";
-}
-
 std::string one_line(std::string_view text) {
     std::string out;
     for (char c : text) {
@@ -81,10 +78,18 @@ int main(int argc, char** argv) {
         return 2;
     }
     const auto& tasks = std::get<std::vector<Task>>(result);
+    crisp::check::Summary summary;
     for (const auto& task : tasks) {
         print_task(task);
-        verify(task);
+        try {
+            crisp::check::run(task, summary);
+        } catch (const std::exception& error) {
+            std::cerr << "crisp: " << error.what() << '\n';
+            summary.error = true;
+        }
     }
-    std::cout << tasks.size() << (tasks.size() == 1 ? " task prepared\n" : " tasks prepared\n");
-    return 0;
+    std::cout << tasks.size() << (tasks.size() == 1 ? " task, " : " tasks, ")
+              << summary.proved << " proved, " << summary.refuted << " refuted, "
+              << summary.unknown << " unknown\n";
+    return summary.exit_code();
 }

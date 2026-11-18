@@ -1,0 +1,11 @@
+[tasks]
+with_reset
+without_reset
+
+[files]
+reset.sv
+
+[design]
+top reset_counter
+with_reset:
+reset rst_n low
