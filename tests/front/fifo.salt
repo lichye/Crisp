@@ -1,0 +1,27 @@
+# fifo.salt
+# 运行：crisp fifo.salt [prove | bmc | baseline]
+
+[tasks]
+task1
+task2
+
+[resource]
+task1:
+thread 16
+ram 32
+timeout 600
+
+[options]
+task1:
+mode bdd
+smart on
+veval off
+
+[files]
+rtl/fifo.sv
+props/fifo_props.sv
+
+[design]
+top     fifo
+clock   clk
+reset   rst_n low

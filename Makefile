@@ -2,15 +2,31 @@ JOBS ?= 4
 CMAKE ?= cmake
 SMART := components/smartVerilog
 VEVAL := components/veval
+VERSION := 0.1.0
+FRONT_OBJECTS := build/front/parse.o build/front/prepare.o
 
-.PHONY: build deps smart veval binary release example test
-build: smart veval binary
+.PHONY: crisp test-front deps smart veval
+crisp: build/crisp
 
-binary:
-	JOBS="$(JOBS)" ./src/components/ebmc/build.sh
+build/crisp: build/main.o $(FRONT_OBJECTS)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-release: build
-	./src/package.sh
+build/main.o: CPPFLAGS += -DCRISP_VERSION='"$(VERSION)"'
+build/%.o: src/%.cpp Makefile
+	@mkdir -p $(@D)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 -Wall -Wextra -Wpedantic -MMD -MP -Isrc -c $< -o $@
+
+build/tests/front.o: tests/front/interface.cpp Makefile
+	@mkdir -p $(@D)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 -Wall -Wextra -Wpedantic -MMD -MP -Isrc -c $< -o $@
+
+build/tests/test-front: build/tests/front.o $(FRONT_OBJECTS)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+test-front: build/crisp build/tests/test-front
+	bash tests/front/run.sh
+
+-include build/main.d $(FRONT_OBJECTS:.o=.d) build/tests/front.d
 
 deps: | $(SMART)/.deps $(SMART)/otherTools
 	JOBS="$(JOBS)" ./$(SMART)/install.sh --deps-only
@@ -25,13 +41,5 @@ smart: | $(SMART)/build
 	$(CMAKE) --build "$(SMART)/build" --target smart --parallel "$(JOBS)"
 
 veval: | $(VEVAL)/build
-	$(CMAKE) -S "$(VEVAL)" -B "$(VEVAL)/build" -DCMAKE_BUILD_TYPE=Release -DCRISP_DRIVER_SOURCE_DIR="$(abspath src)"
+	$(CMAKE) -S "$(VEVAL)" -B "$(VEVAL)/build" -DCMAKE_BUILD_TYPE=Release -DCRISP_DRIVER_SOURCE_DIR:PATH=
 	$(CMAKE) --build "$(VEVAL)/build" --parallel "$(JOBS)"
-
-example:
-	./examples/token/reproduce.sh
-
-test: veval binary
-	$(CMAKE) --build "$(VEVAL)/build" --target crisp_verify_tests --parallel "$(JOBS)"
-	./tests/verify.sh
-	./tests/direct.sh

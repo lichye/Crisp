@@ -1,4 +1,0 @@
-# Revisions shared by the native build and the release manifest.
-ebmc_revision=90b8c17890052551f36480e5a2301b62a91e8dc4
-cbmc_revision=f17df18eaf4a84e7ab7b4e8f60bac1685ad05045
-sby_revision=b21f778333efc1e7c33fe22b56d43f87e4f759d4

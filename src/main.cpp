@@ -1,93 +1,90 @@
-#include "verify.hpp"
-#include "util/database/LoweringDatabase.h"
-#include "util/process/RunExternalCommand.h"
-#include "util/task/CommandArgumentsAndFiles.h"
-#include <charconv>
+#include "front/front.hpp"
+
 #include <iostream>
-#include <regex>
 
-using namespace crisp;
-using namespace veval::verification;
+namespace {
+using namespace crisp::front;
 
-static bool enabled(const Arguments& args, const std::string& flag) {
-    const auto value = args.get(flag, "on");
-    if (value == "on") return true;
-    if (value == "off") return false;
-    throw std::runtime_error(flag + " expects on or off");
-}
+constexpr char usage[] =
+    "Usage: crisp FILE.salt [TASK...]\n"
+    "       crisp --help\n"
+    "       crisp --version\n";
 
-static long long positive(const Arguments& args, const std::string& flag, const std::string& fallback) {
-    const auto value = args.get(flag, fallback);
-    long long number = 0;
-    const auto end = value.data() + value.size();
-    const auto parsed = std::from_chars(value.data(), end, number);
-    if (parsed.ec != std::errc{} || parsed.ptr != end || number <= 0)
-        throw std::runtime_error(flag + " expects a positive integer");
-    return number;
-}
-
-static Options parseOptions(int argc, char** argv) {
-    Arguments args(argc, argv, {}, {"--top","--spec","--split","--lemmas","--budget","--depth"});
-    Options options;
-    options.top = args.required("--top");
-    if (!std::regex_match(options.top, std::regex("[A-Za-z_][A-Za-z_0-9$]*")))
-        throw std::runtime_error("--top needs a simple Verilog module identifier");
-    options.spec = args.required("--spec");
-    if (args.positional.empty()) throw std::runtime_error("supply at least one RTL input");
-    for (const auto& input : args.positional) {
-        if (!fs::is_regular_file(input)) throw std::runtime_error("missing RTL input: " + input);
-        options.design.emplace_back(input);
+void print_task(const Task& task) {
+    std::cout << (task.name ? task.name->value : "(default task)") << '\n';
+    std::cout << "  files";
+    for (const auto& file : task.files) std::cout << "  " << file.value.string();
+    std::cout << '\n';
+    if (task.top) std::cout << "  top      " << task.top->value << '\n';
+    if (task.clock) std::cout << "  clock    " << task.clock->value << '\n';
+    if (task.reset) {
+        const auto& reset = task.reset->value;
+        std::cout << "  reset    " << reset.signal << (reset.polarity == Polarity::low ? " low\n" : " high\n");
     }
-    if (!fs::is_regular_file(options.spec)) throw std::runtime_error("missing specification: " + options.spec.string());
-    options.split = enabled(args,"--split");
-    options.lemmas = enabled(args,"--lemmas");
-    const auto depth = positive(args,"--depth","5");
-    if (depth > 1000000) throw std::runtime_error("--depth exceeds 1000000");
-    options.depth = static_cast<int>(depth);
-    options.seconds = positive(args,"--budget","60");
-    return options;
+    for (const auto& dir : task.includes) std::cout << "  include  " << dir.value.string() << '\n';
+    for (const auto& define : task.defines) {
+        std::cout << "  define   " << define.value.name;
+        if (define.value.value) std::cout << ' ' << *define.value.value;
+        std::cout << '\n';
+    }
+    for (const auto& param : task.params)
+        std::cout << "  param    " << param.value.name << ' ' << param.value.value << '\n';
+
+    std::cout << "  options  mode " << spelling(task.mode.value) << ", level " << spelling(task.level.value)
+              << ", smart " << spelling(task.smart.value) << ", veval " << spelling(task.veval.value);
+    if (task.depth) std::cout << ", depth " << task.depth->value;
+    std::cout << "\n  resource thread " << task.thread.value << ", ram ";
+    if (task.ram_mib) std::cout << task.ram_mib->value << " MiB";
+    else std::cout << "unlimited";
+    std::cout << ", timeout " << task.timeout_seconds.value << "s\n";
 }
 
-static void showLowering(const fs::path& directory) {
-    Database db(directory / "lowering.sqlite", false, true);
-    for (const auto& row : db.rows("SELECT source_entry,instance,body FROM check_templates "
-                                   "ORDER BY source_entry,instance,job_id")) {
-        const auto job = parse(text(row["body"]));
-        std::cout << text(row["source_entry"]) << " @ " << text(row["instance"]) << ": "
-                  << text(job["target"]["sentence"]) << '\n';
-        for (const auto& premise : items(job["premises"]))
-            std::cout << "Premise " << text(premise["source_entry"]) << '\n';
-    }
+void verify(const Task&) {
+    std::cout << "  verify   not implemented\n";
 }
 
-static void showChecks(const fs::path& directory) {
-    const auto report = parse(read(directory / "check.json"));
-    for (const auto& prop : items(report["properties"])) {
-        for (const auto& problem : items(prop["problems"])) {
-            const auto path = text(problem["result_path"]);
-            const auto result = path.empty() ? J{} : parse(read(path));
-            std::cout << text(prop["entry"]) << " @ " << text(problem["instance"]) << ": "
-                      << text(result["verdict"], text(problem["status"])) << '\n';
-            if (text(result["verdict"]) == "refuted") {
-                const auto& traces = items(result["trace"]["raw"]);
-                if (!traces.empty()) std::cout << "Counterexample (VCD)\n" << read(text(*traces.begin())) << '\n';
-            }
-        }
+std::string one_line(std::string_view text) {
+    std::string out;
+    for (char c : text) {
+        if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else out += c;
     }
+    return out;
 }
+} // namespace
 
 int main(int argc, char** argv) {
-    try {
-        if (argc == 3 && std::string(argv[1]) == "show-lowering") { showLowering(argv[2]); return 0; }
-        if (argc == 3 && std::string(argv[1]) == "show-checks") { showChecks(argv[2]); return 0; }
-        if (argc < 4 || std::string(argv[1]) != "verify") throw std::runtime_error("run ./crisp --help");
-        const fs::path root = argv[2], scratch = argv[3];
-        const Tools tools{root / "components/veval/build/veval", root / "components/smartVerilog/build/smart"};
-        veval::util::command_runner::installCancellationHandlers();
-        auto options = parseOptions(argc - 3, argv + 3);
-        return verify(options, tools, scratch, std::cout);
-    } catch (const std::exception& error) {
-        std::cerr << "crisp: " << error.what() << '\n';
+    if (argc == 2 && std::string_view(argv[1]) == "--help") {
+        std::cout << usage;
+        return 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--version") {
+        std::cout << "crisp " << CRISP_VERSION << '\n';
+        return 0;
+    }
+    if (argc < 2) {
+        std::cerr << "crisp: expected FILE.salt [TASK...]; see --help\n";
         return 2;
     }
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i][0] == '-') {
+            std::cerr << "crisp: unexpected option '" << one_line(argv[i]) << "'; see --help\n";
+            return 2;
+        }
+    }
+    const auto result = prepare_tasks(argv[1], {argv + 2, argv + argc});
+    if (const auto* error = std::get_if<FrontError>(&result)) {
+        std::cerr << "crisp: ";
+        if (error->line) std::cerr << one_line(error->file.string()) << ':' << *error->line << ": ";
+        std::cerr << one_line(error->message) << '\n';
+        return 2;
+    }
+    const auto& tasks = std::get<std::vector<Task>>(result);
+    for (const auto& task : tasks) {
+        print_task(task);
+        verify(task);
+    }
+    std::cout << tasks.size() << (tasks.size() == 1 ? " task prepared\n" : " tasks prepared\n");
+    return 0;
 }
