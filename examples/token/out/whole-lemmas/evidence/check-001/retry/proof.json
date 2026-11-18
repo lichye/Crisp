@@ -1,0 +1,61 @@
+{
+  "constraints_sha256": "bc3737eb8e20b051eefebc163ed7a469f73c2d71c5d2a705f39003b2870e5790",
+  "depth": 5,
+  "engine": "smtbmc boolector",
+  "model_sha256": "6e0c73b89d59e9fb2114fe9cac9820d91eaf9529a51bd331fb0a75909276fe6e",
+  "predicates": [
+    {
+      "expression": "((! state.right) == state.left)",
+      "formula": "(= (not [u_dut.state.right]) [u_dut.state.left])",
+      "wires": [
+        "u_dut.state.left",
+        "u_dut.state.right"
+      ]
+    },
+    {
+      "expression": "(clk |-> state.clk)",
+      "formula": "(=> [u_dut.clk] [u_dut.state.clk])",
+      "wires": [
+        "u_dut.clk",
+        "u_dut.state.clk"
+      ]
+    },
+    {
+      "expression": "(sample |-> state.sample)",
+      "formula": "(=> [u_dut.sample] [u_dut.state.sample])",
+      "wires": [
+        "u_dut.sample",
+        "u_dut.state.sample"
+      ]
+    },
+    {
+      "expression": "(state.sample |-> sample)",
+      "formula": "(=> [u_dut.state.sample] [u_dut.sample])",
+      "wires": [
+        "u_dut.sample",
+        "u_dut.state.sample"
+      ]
+    },
+    {
+      "expression": "(state.swap |-> enable)",
+      "formula": "(=> [u_dut.state.swap] [u_dut.enable])",
+      "wires": [
+        "u_dut.enable",
+        "u_dut.state.swap"
+      ]
+    },
+    {
+      "expression": "(state.swap |-> step)",
+      "formula": "(=> [u_dut.state.swap] [u_dut.step])",
+      "wires": [
+        "u_dut.state.swap",
+        "u_dut.step"
+      ]
+    }
+  ],
+  "process": "success",
+  "role": "assume",
+  "sby_status": "PASS",
+  "task_sha256": "e439e9c89154b1c6d931d1cdd22ddc5c4cf1449c0ce57bc99e8d81b59fce9fa5",
+  "verdict": "proved"
+}

@@ -1,0 +1,21 @@
+{
+  "constraints_sha256": "ef5582ff464caf44832f1c88023b112c786d3d4f3272d409b634fea885c21af0",
+  "depth": 5,
+  "engine": "smtbmc boolector",
+  "model_sha256": "6e0c73b89d59e9fb2114fe9cac9820d91eaf9529a51bd331fb0a75909276fe6e",
+  "predicates": [
+    {
+      "expression": "(state.swap |-> enable)",
+      "formula": "(=> [u_dut.state.swap] [u_dut.enable])",
+      "wires": [
+        "u_dut.enable",
+        "u_dut.state.swap"
+      ]
+    }
+  ],
+  "process": "success",
+  "role": "assert",
+  "sby_status": "PASS",
+  "task_sha256": "1825864d6503284b555fcdb8879c8abd8ee5548d5dd58801febf9cdcca59dc00",
+  "verdict": "proved"
+}

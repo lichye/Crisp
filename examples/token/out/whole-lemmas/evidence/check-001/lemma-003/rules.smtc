@@ -1,0 +1,2 @@
+always
+assert (=> [u_dut.sample] [u_dut.state.sample])

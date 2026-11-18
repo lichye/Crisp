@@ -1,0 +1,2 @@
+always
+assert (=> [u_dut.left] (not [u_dut.right]))

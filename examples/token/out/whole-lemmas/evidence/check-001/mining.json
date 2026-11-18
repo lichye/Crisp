@@ -1,0 +1,24 @@
+{
+  "candidates": [
+    "((! state.right) == state.left)",
+    "(clk |-> state.clk)",
+    "(sample |-> state.sample)",
+    "(state.sample |-> sample)",
+    "(state.swap |-> enable)",
+    "(state.swap |-> step)"
+  ],
+  "final_check": {
+    "bound": null,
+    "checked": 8,
+    "errors": 0,
+    "mode": "k-induction",
+    "refuted": 2,
+    "run": 486640,
+    "stage": "check",
+    "t": 1.39,
+    "timed_out": 0,
+    "verified": 6
+  },
+  "module": "controller",
+  "status": "success"
+}

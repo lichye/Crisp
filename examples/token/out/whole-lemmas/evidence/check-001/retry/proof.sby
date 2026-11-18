@@ -1,0 +1,15 @@
+[options]
+mode prove
+depth 5
+smtc rules.smtc
+
+[engines]
+smtbmc boolector
+
+[script]
+read_rtlil model.il
+setattr -set keep 1 w:u_dut.clk w:u_dut.enable w:u_dut.sample w:u_dut.state.clk w:u_dut.state.left w:u_dut.state.right w:u_dut.state.sample w:u_dut.state.swap w:u_dut.step
+
+[files]
+model.il ../model.il
+rules.smtc

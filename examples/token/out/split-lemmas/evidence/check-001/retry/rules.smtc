@@ -1,0 +1,3 @@
+always
+assume (=> [u_dut.left] (not [u_dut.right]))
+assume (or [u_dut.right] [u_dut.left])

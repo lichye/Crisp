@@ -1,0 +1,2 @@
+always
+assert (=> [u_dut.state.swap] [u_dut.step])

@@ -1,0 +1,16 @@
+[options]
+mode prove
+depth 5
+smtc rules.smtc
+
+[engines]
+smtbmc boolector
+
+[script]
+read_rtlil model.il
+setattr -set keep 1 w:u_dut.state.swap w:u_dut.step
+chformal -assert -remove
+
+[files]
+model.il ../model.il
+rules.smtc

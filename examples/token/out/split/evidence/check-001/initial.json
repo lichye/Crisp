@@ -1,0 +1,42 @@
+{
+  "engine_detail": {
+    "basecase": "pass",
+    "basecase_completed": true,
+    "depth": 5,
+    "engine": "smtbmc boolector",
+    "induction": "FAIL",
+    "induction_closed": false,
+    "last_checked_step": 4,
+    "mode": "prove"
+  },
+  "job_id": "7298a3862eef1995cc3ed3123490d004abfa2cef27deadfa63768c691e0522f9",
+  "lemma_eligible": true,
+  "model_sha256": "637034825813596b82a52b5aea97a58c6fd49ec9d4b097fd934f87526631f6c1",
+  "premises": [],
+  "reason": {
+    "code": null,
+    "text": "no complete proof or audited refutation within the requested ladder"
+  },
+  "setup": {
+    "clock": "clk",
+    "clock_edge": "posedge",
+    "clock_model": "single-declared-clock",
+    "reset": {
+      "initial_state": "unconstrained",
+      "kind": "not-provided",
+      "source_entry": null,
+      "text": null
+    }
+  },
+  "solver_status": "UNKNOWN",
+  "target": {
+    "instance": "token_formal.dut.state",
+    "label": "p_no_conflict",
+    "module": "token",
+    "sentence": "always !conflict",
+    "sentence_sha256": "d82893f03f2aab9ed37dcf79314439f803fd76545f85cac8cb4cfba8e0784253",
+    "source_entry": "token_formal.p_no_conflict",
+    "top": "token_spec"
+  },
+  "verdict": "unknown"
+}

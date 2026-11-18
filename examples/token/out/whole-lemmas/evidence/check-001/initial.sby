@@ -1,0 +1,12 @@
+[options]
+mode prove
+depth 5
+
+[engines]
+smtbmc boolector
+
+[script]
+read_rtlil model.il
+
+[files]
+model.il

@@ -1,0 +1,2 @@
+always
+assert (or [u_dut.right] [u_dut.left])

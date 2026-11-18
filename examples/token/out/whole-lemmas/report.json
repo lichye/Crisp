@@ -1,0 +1,88 @@
+{
+  "budget_s": 60,
+  "depth": 5,
+  "elapsed_s": 8.6478,
+  "engine": "smtbmc boolector",
+  "inputs": [
+    {
+      "name": "token.sv",
+      "sha256": "7bfdc7eec1803523aa783912a48ff7499c545e111b11a1640e84bb024f00f3f4"
+    },
+    {
+      "name": "spec.sv",
+      "sha256": "e1451e8505dd1562576ead66c7b7a90d72e02e5844728a96bf80d626982adf3d"
+    }
+  ],
+  "lemmas": "on",
+  "properties": [
+    {
+      "checks": [
+        {
+          "candidates": [
+            {
+              "expression": "((! state.right) == state.left)",
+              "proof": "evidence/check-001/lemma-001/proof.json",
+              "verdict": "proved"
+            },
+            {
+              "expression": "(clk |-> state.clk)",
+              "proof": "evidence/check-001/lemma-002/proof.json",
+              "verdict": "proved"
+            },
+            {
+              "expression": "(sample |-> state.sample)",
+              "proof": "evidence/check-001/lemma-003/proof.json",
+              "verdict": "proved"
+            },
+            {
+              "expression": "(state.sample |-> sample)",
+              "proof": "evidence/check-001/lemma-004/proof.json",
+              "verdict": "proved"
+            },
+            {
+              "expression": "(state.swap |-> enable)",
+              "proof": "evidence/check-001/lemma-005/proof.json",
+              "verdict": "proved"
+            },
+            {
+              "expression": "(state.swap |-> step)",
+              "proof": "evidence/check-001/lemma-006/proof.json",
+              "verdict": "proved"
+            }
+          ],
+          "initial": "evidence/check-001/initial.json",
+          "lemmas_used": [
+            "evidence/check-001/lemma-001/proof.json",
+            "evidence/check-001/lemma-002/proof.json",
+            "evidence/check-001/lemma-003/proof.json",
+            "evidence/check-001/lemma-004/proof.json",
+            "evidence/check-001/lemma-005/proof.json",
+            "evidence/check-001/lemma-006/proof.json"
+          ],
+          "mining": "evidence/check-001/mining.json",
+          "retry": "evidence/check-001/retry/proof.json",
+          "target": {
+            "instance": "token_formal.dut",
+            "label": "p_no_conflict",
+            "module": "controller",
+            "sentence": "always !conflict",
+            "sentence_sha256": "d82893f03f2aab9ed37dcf79314439f803fd76545f85cac8cb4cfba8e0784253",
+            "source_entry": "token_formal.p_no_conflict",
+            "top": "controller_spec"
+          },
+          "verdict": "proved"
+        }
+      ],
+      "skipped": [],
+      "source": "token_formal.p_no_conflict"
+    }
+  ],
+  "scope": "module",
+  "source_assumptions": [],
+  "source_count": 1,
+  "sources_with_all_selected_checks_proved": 1,
+  "split": "off",
+  "status": "finished",
+  "top": "token_formal",
+  "veval": "success"
+}
