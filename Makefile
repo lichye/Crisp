@@ -10,7 +10,7 @@ VERSION := 0.1.0
 FRONT_OBJECTS := build/front/parse.o build/front/prepare.o
 APP_OBJECTS := build/main.o build/check/run.o $(FRONT_OBJECTS)
 
-.PHONY: crisp ebmc test test-front deps smart smart-deps veval
+.PHONY: crisp ebmc test test-front test-smart deps smart smart-deps veval
 crisp: build/crisp
 
 $(HWCBMC)/src/ebmc/Makefile:
@@ -66,6 +66,10 @@ smart: ebmc smart-deps
 		-DHWCBMC_DIR="$(abspath $(HWCBMC))" -DSMART_DEPS_ROOT="$(abspath $(SMART_DEPS_ROOT))" \
 		-DCVC5_ROOT="$(abspath $(CVC5_ROOT))"
 	$(CMAKE) --build "$(SMART)/build" --target smart --parallel "$(JOBS)"
+
+test-smart: smart crisp
+	$(CMAKE) --build "$(SMART)/build" --target test_smart_ebmc --parallel "$(JOBS)"
+	bash tests/smart/run.sh
 
 veval: | $(VEVAL)/build
 	$(CMAKE) -S "$(VEVAL)" -B "$(VEVAL)/build" -DCMAKE_BUILD_TYPE=Release -DCRISP_DRIVER_SOURCE_DIR:PATH=

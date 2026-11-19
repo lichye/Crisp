@@ -31,12 +31,15 @@ struct BlockJob {
     int latency = 0;            // LTL latency; 0 = plain safety
 };
 
-enum class BlockStatus { Verified, NoAssertion, TimedOut, Failed };
+// Contract between the worker executable and the runner.
+enum class BlockExit { Verified = 0, Error = 3, Refuted = 10, Unknown = 11, TimedOut = 12,
+                       NoAssertion = 255 };
+enum class BlockStatus { Verified, Refuted, Unknown, NoAssertion, TimedOut, Failed };
 
 struct BlockResult {
     BlockJob job;
     BlockStatus status = BlockStatus::Failed;
-    int exitCode = 0;
+    int exitCode = -1;
     double seconds = 0.0;
     std::string assertion;  // set when status == Verified
     int pid = 0;            // for correlating with the block's own log

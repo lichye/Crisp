@@ -160,19 +160,19 @@ BlockResult runOne(const BlockJob& job, const BlockRunnerOptions& options,
 
     if (timedOut) {
         result.status = BlockStatus::TimedOut;
-    } else if (result.exitCode == 0) {
-        // Exit 0 means the block verified something; the assertion is in its
-        // result file. An empty file is still "nothing found".
-        // resultFile is absolute; the child wrote it from inside workDir.
-        const auto assertion = trimmed(readFile(job.resultFile));
-        if (assertion.empty()) {
-            result.status = BlockStatus::NoAssertion;
-        } else {
+    } else if (result.exitCode == static_cast<int>(BlockExit::Verified)) {
+        // Success requires the result file promised by the worker.
+        result.assertion = trimmed(readFile(job.resultFile));
+        if (!result.assertion.empty())
             result.status = BlockStatus::Verified;
-            result.assertion = assertion;
+    } else if (WIFEXITED(status)) {
+        switch (static_cast<BlockExit>(result.exitCode)) {
+        case BlockExit::Refuted: result.status = BlockStatus::Refuted; break;
+        case BlockExit::Unknown: result.status = BlockStatus::Unknown; break;
+        case BlockExit::TimedOut: result.status = BlockStatus::TimedOut; break;
+        case BlockExit::NoAssertion: result.status = BlockStatus::NoAssertion; break;
+        default: break;
         }
-    } else {
-        result.status = BlockStatus::NoAssertion;
     }
 
     if (result.status != BlockStatus::Verified) {

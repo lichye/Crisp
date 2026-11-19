@@ -25,7 +25,8 @@ class   Trace{
         // candidate material. Empty (the default) keeps the historical
         // behaviour: a signal belongs to the scope that declares it and
         // nothing below the mined scope is visible.
-        Trace(TraceType type, std::string path, std::string hierarchyRoot = "");
+        Trace(TraceType type, std::string path, std::string hierarchyRoot = "",
+              std::string exactScope = "");
 
         ~Trace();
         
@@ -54,8 +55,9 @@ class   Trace{
 
         // "" disables hierarchical naming; see the constructor.
         std::string hierarchyRoot;
+        std::string exactScope;  // Select one fully qualified instance, excluding simulator wrappers.
 
-        int valueLength;
+        int valueLength = 0;
 
         //major data structure to store the signal values
         std::map<Signal, std::vector<Value*>*> signals_map;

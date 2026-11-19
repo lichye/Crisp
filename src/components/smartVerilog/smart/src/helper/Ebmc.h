@@ -17,10 +17,12 @@ struct EbmcOptions {
 };
 
 enum class EbmcStatus { Verified, Refuted, Unknown, TimedOut, Error };
+const char* statusName(EbmcStatus status);
 
 struct EbmcResult {
     EbmcStatus status;
     std::string detail;
+    std::string counterexample{};  // Set only for the requested property and instance.
 };
 
 std::string ebmcExecutable();

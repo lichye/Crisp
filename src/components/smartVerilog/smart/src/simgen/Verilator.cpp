@@ -116,7 +116,7 @@ namespace {
 // Run `verilator --xml-only` and return the XML, or empty on failure.
 std::string elaborateXml(const std::vector<std::string>& designFiles,
                          const std::string& top, const std::string& verilator,
-                         const std::string& scratchDir) {
+                         const std::string& scratchDir, bool refresh = false) {
     if (designFiles.empty()) return {};
     std::error_code error;
     fs::create_directories(scratchDir, error);
@@ -125,7 +125,7 @@ std::string elaborateXml(const std::vector<std::string>& designFiles,
     // elaborating twice is pure waste. The XML is written into the workdir, so
     // reuse it when it is already there.
     const auto cached = scratchDir + "/xml/V" + top + ".xml";
-    if (fs::exists(cached, error)) {
+    if (!refresh && fs::exists(cached, error)) {
         std::ifstream in(cached);
         if (in)
             return std::string((std::istreambuf_iterator<char>(in)),
@@ -153,7 +153,7 @@ std::vector<Instance> enumerateInstances(
     const std::vector<std::string>& designFiles, const std::string& top,
     const std::string& verilator, const std::string& scratchDir) {
     std::vector<Instance> instances;
-    const auto xml = elaborateXml(designFiles, top, verilator, scratchDir);
+    const auto xml = elaborateXml(designFiles, top, verilator, scratchDir, true);
     if (xml.empty()) return instances;
 
     for (std::size_t at = xml.find("<cell "); at != std::string::npos;
@@ -164,45 +164,22 @@ std::vector<Instance> enumerateInstances(
 
         Instance instance;
         instance.hierarchy = attribute(tag, "hier");
-        instance.module = attribute(tag, "submodname");
-        if (instance.hierarchy.empty() || instance.module.empty()) continue;
+        if (instance.hierarchy.empty()) continue;
         // The top names itself; it is not an instance of anything.
         if (instance.hierarchy == top) continue;
-        const auto mangled = instance.module.find("__");
-        if (mangled != std::string::npos)
-            instance.module = instance.module.substr(0, mangled);
-        instances.push_back(instance);
+        // The XML cell path uses the same bracket encoding as the C++ member.
+        instance.verilogHierarchy = instance.hierarchy;
+        for (const auto& [encoded, bracket] :
+             {std::pair<std::string, char>{"__BRA__", '['}, {"__KET__", ']'}}) {
+            std::size_t offset = 0;
+            while ((offset = instance.verilogHierarchy.find(encoded, offset)) != std::string::npos) {
+                instance.verilogHierarchy.replace(offset, encoded.size(), 1, bracket);
+                ++offset;
+            }
+        }
+        instances.push_back(std::move(instance));
     }
     return instances;
-}
-
-std::string definingModule(const std::vector<std::string>& designFiles,
-                           const std::string& top, const std::string& instance,
-                           const std::string& verilator,
-                           const std::string& scratchDir) {
-    const auto xml = elaborateXml(designFiles, top, verilator, scratchDir);
-    if (xml.empty()) return {};
-
-    for (std::size_t at = xml.find("<cell "); at != std::string::npos;
-         at = xml.find("<cell ", at + 1)) {
-        const auto end = xml.find('>', at);
-        if (end == std::string::npos) break;
-        const auto tag = xml.substr(at, end - at);
-        if (attribute(tag, "name") != instance) continue;
-        auto defined = attribute(tag, "submodname");
-        // The top cell names itself; that is not an instance of something
-        // else, so treat it as "already a module name".
-        if (defined == instance) return {};
-        // Verilator specialises a parameterised module per parameter set and
-        // names the result `axis_fifo__D20_DBc_K0_L0_U0`. No such module is
-        // written anywhere, so the property has to go into the source name.
-        // That constrains every specialisation, which is the honest reading:
-        // an invariant that only holds for one parameterisation gets refuted.
-        const auto mangled = defined.find("__");
-        if (mangled != std::string::npos) defined = defined.substr(0, mangled);
-        return defined;
-    }
-    return {};
 }
 
 std::vector<StateSignal> enumerateStateSignals(
@@ -239,12 +216,28 @@ std::vector<StateSignal> enumerateStateSignals(
     if (topAt == std::string::npos) return signals;
     const auto scopeEnd = xml.find("</module>", topAt);
 
-    for (std::size_t at = xml.find("<var ", topAt);
-         at != std::string::npos && at < scopeEnd;
-         at = xml.find("<var ", at + 1)) {
+    // Only direct declarations can be accessed with <top>__DOT__<name>.
+    // In particular, generate blocks contain genvars and localparams which
+    // may appear as scalar <var> nodes but never become C++ members.
+    std::size_t depth = 0;
+    std::size_t cursor = xml.find('>', topAt) + 1;
+    for (;;) {
+        const auto at = xml.find('<', cursor);
+        if (at == std::string::npos || at >= scopeEnd) break;
         const auto end = xml.find('>', at);
         if (end == std::string::npos) break;
+        cursor = end + 1;
+        if (xml[at + 1] == '/') {
+            if (depth == 0) break;
+            --depth;
+            continue;
+        }
+        const bool directVariable = depth == 0 && xml.compare(at, 5, "<var ") == 0;
+        if (xml[end - 1] != '/') ++depth;
+        if (!directVariable) continue;
         const auto tag = xml.substr(at, end - at);
+        if (!attribute(tag, "param").empty() || !attribute(tag, "localparam").empty())
+            continue;
         const auto name = attribute(tag, "name");
         const auto dir = attribute(tag, "dir");
         if (name.empty() || dir == "input") continue;
@@ -477,9 +470,11 @@ std::string renderVerilatorHarness(const frontend::ModuleInfo& info,
                                        : freeRegRef(info.top, signal.name));
         } else {
             for (const auto& port : info.ports)
-                if (port.dir == "output") observed.push_back("top->" + port.name);
+                if (port.dir == "output" && port.width <= 64)
+                    observed.push_back("top->" + port.name);
             for (const auto& reg : info.freeRegs)
-                observed.push_back(freeRegRef(info.top, reg.name));
+                if (reg.width <= 64)
+                    observed.push_back(freeRegRef(info.top, reg.name));
         }
 
         if (!observed.empty()) {

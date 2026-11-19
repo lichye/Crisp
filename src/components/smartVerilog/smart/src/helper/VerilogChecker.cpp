@@ -150,7 +150,7 @@ void VerilogChecker::cleanProperties() {
     propertyTypes.clear();
 }
 
-smart::helper::EbmcStatus VerilogChecker::runEBMC(const std::string& trace,
+smart::helper::EbmcResult VerilogChecker::runEBMC(const std::string& trace,
                                                   const std::string& scope)
 {
     smart::helper::EbmcOptions options;
@@ -166,7 +166,7 @@ smart::helper::EbmcStatus VerilogChecker::runEBMC(const std::string& trace,
     timer->stop(timerType::FM_Timer);
     if(result.status == smart::helper::EbmcStatus::Error)
         throw std::runtime_error("EBMC failed for " + formalFilePath + ": " + result.detail);
-    return result.status;
+    return result;
 }
 
 //The check function will return true if the state is reachable
@@ -198,7 +198,7 @@ bool VerilogChecker::checkStateReachability(State* state) {
             bound = reachabilityBound;
         }
         // Only a proof of !state supplies a negative example.
-        result = runEBMC() == smart::helper::EbmcStatus::Verified;
+        result = runEBMC().status == smart::helper::EbmcStatus::Verified;
         unboundCheck = savedUnboundCheck;
         bound = savedBound;
     }
@@ -211,7 +211,7 @@ bool VerilogChecker::checkStateReachability(State* state) {
 }
 
 //The check function will return true if the property is verified/ the state is safe
-smart::helper::EbmcStatus VerilogChecker::checkExprSafety(SygusFunction* func,
+smart::helper::EbmcResult VerilogChecker::checkExprSafety(SygusFunction* func,
                                                            const std::string& tracePath,
                                                            const std::string& scope)
 {
@@ -221,16 +221,17 @@ smart::helper::EbmcStatus VerilogChecker::checkExprSafety(SygusFunction* func,
     addProperty(func, PropertyType::SAFT_PROPERTY);
     writeVerilogFile();
 
-    EbmcStatus result = EbmcStatus::Error;
+    smart::helper::EbmcResult result{EbmcStatus::Error, {}};
     if(solver == BackEndSolver::EBMC)
         result = runEBMC(tracePath, scope);
     else if(solver == BackEndSolver::SBY)
     {
-        result = runSby() ? EbmcStatus::Verified : EbmcStatus::Refuted;
-        if(result == EbmcStatus::Refuted)
+        result.status = runSby() ? EbmcStatus::Verified : EbmcStatus::Refuted;
+        if(result.status == EbmcStatus::Refuted)
         {
             const auto vcdPath = homePath + "/runtime/formal/dis_task/engine_0/trace.vcd";
             fs::copy_file(vcdPath, tracePath, fs::copy_options::overwrite_existing);
+            result.counterexample = tracePath;
         }
     }
     if(deleteTempFile)

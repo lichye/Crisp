@@ -97,9 +97,11 @@ private:
 const char* statusName(BlockStatus status) {
     switch (status) {
         case BlockStatus::Verified: return "verified";
+        case BlockStatus::Refuted: return "refuted";
+        case BlockStatus::Unknown: return "unknown";
         case BlockStatus::NoAssertion: return "no-assertion";
         case BlockStatus::TimedOut: return "timed-out";
-        case BlockStatus::Failed: return "failed";
+        case BlockStatus::Failed: return "error";
     }
     return "unknown";
 }
@@ -128,8 +130,12 @@ std::string timestamp() {
 
 // Which tool a name resolves to, or "" when it is not on PATH.
 std::string which(const std::string& tool) {
+    auto executable = [](const fs::path& path) {
+        std::error_code error;
+        return fs::is_regular_file(path, error) && access(path.c_str(), X_OK) == 0;
+    };
     if (tool.find('/') != std::string::npos)
-        return fs::exists(tool) ? tool : std::string();
+        return executable(tool) ? tool : std::string();
 
     const char* path = std::getenv("PATH");
     if (path == nullptr) return {};
@@ -138,8 +144,7 @@ std::string which(const std::string& tool) {
     while (std::getline(entries, dir, ':')) {
         if (dir.empty()) continue;
         const auto candidate = fs::path(dir) / tool;
-        std::error_code error;
-        if (fs::exists(candidate, error)) return candidate.string();
+        if (executable(candidate)) return candidate.string();
     }
     return {};
 }
@@ -151,34 +156,11 @@ std::string firstLineOf(const std::string& command) {
     std::string line;
     if (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr)
         line = buffer.data();
-    pclose(pipe);
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {}
+    if (pclose(pipe) != 0) return {};
     while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
         line.pop_back();
     return line;
-}
-
-// Sibling .sv/.v files, which multi-file designs keep their submodules in.
-// A sibling that declares the top module itself is skipped: `smart` writes
-// <top>_assertion.sv beside its input, and a second run in the same directory
-// must not treat its own previous output as part of the design.
-std::vector<std::string> designFilesFor(const std::string& main,
-                                        const std::string& top) {
-    std::vector<std::string> files{main};
-    const auto parent = fs::path(main).parent_path();
-    std::vector<std::string> siblings;
-    std::error_code error;
-    for (const auto& entry :
-         fs::directory_iterator(parent.empty() ? fs::path(".") : parent, error)) {
-        if (!entry.is_regular_file()) continue;
-        const auto extension = entry.path().extension().string();
-        if (extension != ".sv" && extension != ".v") continue;
-        if (fs::equivalent(entry.path(), fs::path(main), error)) continue;
-        if (frontend::declaresModule(entry.path().string(), top)) continue;
-        siblings.push_back(entry.path().string());
-    }
-    std::sort(siblings.begin(), siblings.end());
-    files.insert(files.end(), siblings.begin(), siblings.end());
-    return files;
 }
 
 std::optional<frontend::ResetInfo> parseResetOption(const std::string& text) {
@@ -228,24 +210,10 @@ ExitCode Pipeline::run(RunSummary& summary) {
         return ExitCode::UserError;
     }
 
-    std::string top = options_.getString("top");
-    if (top.empty()) top = fs::path(mainFile).stem().string();
-    summary.top = top;
-
-    // The module the invariants are about. The design is still elaborated,
-    // simulated and checked as a whole from `top`; this only decides whose
-    // signals become candidates and whose body the assertions are written
-    // into. Pointing it at a submodule mines that block with its parent as
-    // the environment.
-    std::string mineModule = options_.getString("module");
-    if (mineModule.empty()) mineModule = top;
-    // A VCD scope is an instance (DFF_0); a property is written into a module
-    // definition (dff). Candidate variables key off the former, injection off
-    // the latter, and only the design knows the mapping.
-    std::string injectModule = mineModule;
+    const auto requestedModule = options_.getString("module");
 
     const bool discoverSiblings = inputs.size() == 1 && options_.getBool("discover_siblings");
-    const auto designFiles = discoverSiblings ? designFilesFor(mainFile, top) : inputs;
+    std::vector<std::string> designFiles;
 
 
     const auto simulatorName = options_.getString("simulator");
@@ -253,18 +221,22 @@ ExitCode Pipeline::run(RunSummary& summary) {
 
     // ---- frontend ------------------------------------------------------
     frontend::ModuleInfo info;
-    std::vector<frontend::InstanceFreeReg> instanceRegs;
+    std::vector<frontend::ElaboratedInstance> instances;
     frontend::HwcbmcOptions frontendOptions;
     frontendOptions.autoDiscoverSiblings = discoverSiblings;
     for (std::size_t i = 1; i < inputs.size(); ++i)
         frontendOptions.extraFiles.push_back(inputs[i]);
     try {
-        info = frontend::parseModuleFile(mainFile, top, frontendOptions,
-                                         useVerilator ? &instanceRegs : nullptr);
+        info = frontend::parseModuleFile(mainFile, options_.getString("top"), frontendOptions,
+                                         useVerilator || !requestedModule.empty() ? &instances : nullptr,
+                                         &designFiles);
     } catch (const std::exception& e) {
         std::cerr << "smart: " << e.what() << "\n";
         return ExitCode::UserError;
     }
+
+    const auto& top = info.top;
+    summary.top = top;
 
     if (info.ports.empty() && info.freeRegs.empty()) {
         std::cerr << "smart: module '" << top
@@ -272,23 +244,44 @@ ExitCode Pipeline::run(RunSummary& summary) {
         return ExitCode::UserError;
     }
 
+    // Resolve the exact trace scope and the source module separately. The
+    // property is inserted into the module, so EBMC checks every instance.
+    std::string mineModule = top;
+    std::string injectModule = top;
+    if (!requestedModule.empty() && requestedModule != top) {
+        const auto exact = std::find_if(instances.begin(), instances.end(), [&](const auto& instance) {
+            return requestedModule == instance.path || requestedModule == top + "." + instance.path;
+        });
+        const frontend::ElaboratedInstance* selected = nullptr;
+        if (exact != instances.end()) {
+            selected = &*exact;
+        } else {
+            for (const auto& instance : instances) {
+                const auto leaf = instance.path.substr(instance.path.find_last_of('.') + 1);
+                if (requestedModule != leaf && requestedModule != instance.module) continue;
+                if (selected != nullptr) {
+                    std::cerr << "smart: ambiguous --module '" << requestedModule
+                              << "', specify the full instance path\n";
+                    return ExitCode::UserError;
+                }
+                selected = &instance;
+            }
+        }
+        if (selected == nullptr) {
+            std::cerr << "smart: no instance matches --module '" << requestedModule << "'\n";
+            return ExitCode::UserError;
+        }
+        mineModule = top + "." + selected->path;
+        injectModule = selected->module;
+        say("[" + timestamp() + "] mining instance " + mineModule +
+            ", writing into module " + injectModule);
+    }
+
     // ---- workdir -------------------------------------------------------
     std::string workRoot = options_.getString("workdir");
     if (workRoot.empty()) workRoot = "smart-work-" + top;
     WorkDir work(fs::absolute(workRoot).string());
 
-    // A VCD scope is an instance; a property is written into a module
-    // definition. Ask the elaborator which module the named instance is, and
-    // fall back to treating the name as a module when it is not an instance.
-    if (mineModule != top) {
-        const auto defined = simgen::definingModule(designFiles, top, mineModule,
-                                                    "verilator", work.root());
-        if (!defined.empty()) {
-            injectModule = defined;
-            say("[" + timestamp() + "] mining instance " + mineModule +
-                ", writing into module " + injectModule);
-        }
-    }
     summary.workDir = work.root();
     std::vector<std::string> workdirDesign;
 
@@ -298,10 +291,13 @@ ExitCode Pipeline::run(RunSummary& summary) {
         // runtime/verilog and runtime/formal hold the design as the checker
         // sees it: originals, plus any --assume the user asked for.
         const auto assumes = options_.getStringList("assume");
+        const auto assumeTarget = assumes.empty() ? std::string{} :
+                                  emit::fileDeclaringModule(designFiles, top);
+        if (!assumes.empty() && assumeTarget.empty())
+            throw std::runtime_error("cannot locate module for --assume: " + top);
         for (const auto& file : designFiles) {
             auto source = readFile(file);
-            if (!assumes.empty() &&
-                fs::path(file).stem().string() == fs::path(mainFile).stem().string())
+            if (file == assumeTarget)
                 source = frontend::injectAssumes(source, top, assumes,
                                                  options_.getString("clock"));
             const auto name = fs::path(file).filename().string();
@@ -359,14 +355,10 @@ ExitCode Pipeline::run(RunSummary& summary) {
     }
 
     // Use the width of each elaborated instance, including parameter overrides.
-    for (const auto& entry : instanceRegs) {
-        std::string flatPath = top + "__DOT__";
-        for (const char c : entry.instance) {
-            if (c == '.') flatPath += "__DOT__";
-            else flatPath += c;
-        }
-        harness.hierFreeRegs.push_back({entry.reg.kind, entry.reg.width,
-                                        flatPath + "__DOT__" + entry.reg.name, entry.reg.name});
+    if (useVerilator) {
+        for (const auto& instance : instances)
+            for (const auto& reg : instance.freeRegs)
+                harness.hierFreeRegs.push_back({reg.kind, reg.width, {}, reg.name, instance.path});
     }
     if (!harness.hierFreeRegs.empty())
         say("[" + timestamp() + "] driving " +
@@ -570,25 +562,8 @@ ExitCode Pipeline::run(RunSummary& summary) {
                     mined.insert(result.assertion).second)
                     ++foundThisRound;
 
-                // Why a block found nothing decides what to do about it, and
-                // the three reasons want opposite responses. Measured on
-                // s838/c880: infeasible 44-47%, refuted 0.5-29%, killed
-                // 0-4%. Without this the log said "no-assertion" for all
-                // three and the exit code had to be decoded by hand.
-                //
-                //   0    the block verified an assertion
-                //   1    a candidate was synthesised and did not verify
-                //   255  smart.cpp exit(-1): SyGuS found nothing, or cvc5 gave
-                //        up on the problem
-                //   127  the child never got as far as running
-                //   -1   killed by a signal, i.e. it ran out of wall clock
-                const char* reason =
-                    result.exitCode == 0     ? "verified"
-                    : result.exitCode == 1   ? "refuted"
-                    : result.exitCode == 255 ? "infeasible"
-                    : result.exitCode == 127 ? "setup-failed"
-                    : result.exitCode < 0    ? "killed"
-                                             : "other";
+                const char* reason = result.status == BlockStatus::NoAssertion
+                    ? "infeasible" : statusName(result.status);
 
                 std::ostringstream record;
                 record << "\"reason\":\"" << reason << "\","
@@ -628,19 +603,41 @@ ExitCode Pipeline::run(RunSummary& summary) {
         }
 
         {
-            std::size_t timedOut = 0, failed = 0, verified = 0;
+            std::size_t timedOut = 0, failed = 0, verified = 0, refuted = 0, unknown = 0;
+            const BlockResult* firstFailure = nullptr;
             for (const auto& result : results) {
-                if (result.status == BlockStatus::TimedOut) ++timedOut;
-                else if (result.status == BlockStatus::Failed) ++failed;
-                else if (result.status == BlockStatus::Verified) ++verified;
+                switch (result.status) {
+                case BlockStatus::TimedOut: ++timedOut; break;
+                case BlockStatus::Failed:
+                    ++failed;
+                    if (firstFailure == nullptr) firstFailure = &result;
+                    break;
+                case BlockStatus::Verified: ++verified; break;
+                case BlockStatus::Refuted: ++refuted; break;
+                case BlockStatus::Unknown: ++unknown; break;
+                case BlockStatus::NoAssertion: break;
+                }
             }
             runLog.record("\"stage\":\"round\",\"round\":" + std::to_string(round) +
                           ",\"blocks\":" + std::to_string(jobsThisRound.size()) +
                           ",\"verified\":" + std::to_string(verified) +
+                          ",\"refuted\":" + std::to_string(refuted) +
+                          ",\"unknown\":" + std::to_string(unknown) +
                           ",\"timed_out\":" + std::to_string(timedOut) +
                           ",\"failed\":" + std::to_string(failed) +
                           ",\"new\":" + std::to_string(foundThisRound) +
                           ",\"total\":" + std::to_string(mined.size()));
+
+            if (firstFailure != nullptr) {
+                const auto log = runner.logsDir + "/core_" + firstFailure->job.coreId + ".log";
+                std::cerr << "smart: " << failed << " synthesis block(s) failed; first block exited "
+                          << firstFailure->exitCode << " (" << log << ")\n";
+                std::ifstream input(log);
+                for (std::string line; std::getline(input, line);)
+                    if (line.rfind("smart: ", 0) == 0) std::cerr << line << '\n';
+                summary.workDirKept = true;
+                return ExitCode::Failure;
+            }
         }
 
         if (!options_.getBool("blockified")) break;
@@ -892,8 +889,13 @@ ExitCode Pipeline::run(RunSummary& summary) {
                       std::to_string(checked.size()) + ",\"verified\":" +
                       std::to_string(verified.size()) + ",\"refuted\":" +
                       std::to_string(refuted) + ",\"timed_out\":" +
+                      ",\"unknown\":" + std::to_string(unknown) +
                       std::to_string(timedOutChecks) + ",\"errors\":" +
                       std::to_string(errors));
+        if (errors != 0) {
+            summary.workDirKept = true;
+            return ExitCode::Failure;
+        }
     } else {
         verified = assertions;
     }
@@ -978,9 +980,13 @@ ExitCode checkEnvironment(const Options& options, const std::string& selfExecuta
             if (tool.required) ok = false;
             continue;
         }
-        std::cout << "[ok]      " << tool.name << "  " << path << "  "
-                  << firstLineOf(helper::shellQuote(path) + " " + tool.versionFlag)
-                  << "\n";
+        const auto version = firstLineOf(helper::shellQuote(path) + " " + tool.versionFlag);
+        if (version.empty()) {
+            std::cout << "[FAILED]  " << tool.name << "  " << path << " (version command failed)\n";
+            if (tool.required) ok = false;
+            continue;
+        }
+        std::cout << "[ok]      " << tool.name << "  " << path << "  " << version << "\n";
     }
 
     std::cout << "[ok]      smart     " << selfExecutable << "  " << smart::version()
