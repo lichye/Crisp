@@ -8,8 +8,8 @@ lives in [util/task](../task/).
 
 Fresh lowering exports insert rows before building non-unique query indexes.
 Primary/unique constraints stay active, and an aborted transaction restores the
-original schema. Index sorting may use SQLite helper threads within the supplied
-`-j` budget; the private export uses a 64 MiB page-cache target. Journal and sync
+original schema. The SQLite writer sorts indexes on its own thread and uses a
+64 MiB page-cache target for the private export. Journal and sync
 settings are unchanged. Existing result databases are not
 bulk-rebuilt.
 

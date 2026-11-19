@@ -33,7 +33,6 @@ struct ElaborateOptions {
 
     // 0 (silent) to 10 (everything). The frontend is chatty at 6 and above.
     unsigned verbosity = 1;
-    std::size_t threads = 1;
 };
 
 // An elaborated design. Holds the symbol table and transition system, and

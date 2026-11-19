@@ -147,6 +147,7 @@ static int jobs(const Arguments &a) {
     const auto parsed = std::from_chars(requested.data(), requested.data() + requested.size(), threads);
     if (parsed.ec != std::errc{} || parsed.ptr != requested.data() + requested.size() || !threads)
         throw std::runtime_error("generation threads must be a positive integer");
+    threads = util::effectiveGenerationThreads(threads);
     if (a.has("--jobs") && a.has("--store"))
         throw std::runtime_error("choose --jobs DIR or --store DATABASE");
     const fs::path source = absolute(a.required("--out"));
@@ -261,7 +262,7 @@ int main(int argc, char **argv) {
                          "  [--timeout SECONDS] [--memory GiB | --no-memory-limit]\n"
                          "  [--ladder JSON] [--whole-design INSTANCE --whole-design-policy keep|drop-when-below]\n"
                          "  [--generation-profile PATH]  separate Jobs/environment phase timings\n"
-                         "  [-j N | --generation-threads N]  parallel Job preparation (default 1)\n";
+                         "  [-j N | --generation-threads N]  accepted for compatibility, Job preparation uses one thread\n";
             return 0;
         }
         return jobs(a);

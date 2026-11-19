@@ -551,11 +551,13 @@ exprt verilog_synthesist::synth_lhs_expr(exprt expr)
   }
   else if(expr.id() == ID_verilog_bit_select)
   {
-    // Read lowering guards unpacked array access and returns a default value
-    // outside the range. A write through that same access leaves the array
-    // unchanged when the guard is false.
-    const auto &select = to_verilog_bit_select_expr(expr);
-    auto lowered = verilog_lowering(expr);
+    // Lower each selector after its base has been synthesized as an lvalue.
+    // Read lowering of the entire tree would replace an inner mem[a] by
+    // if(in_range, mem[a], default), which is no longer an assignment target.
+    auto &select = to_verilog_bit_select_expr(expr);
+    select.src() = synth_lhs_expr(select.src());
+    select.index() = synth_expr(select.index(), symbol_statet::CURRENT);
+    auto lowered = verilog_lowering_node(expr);
     if(select.src().type().id() == ID_array &&
        to_verilog_array_type(select.src().type()).is_unpacked() &&
        lowered.id() != ID_index)
@@ -563,17 +565,18 @@ exprt verilog_synthesist::synth_lhs_expr(exprt expr)
       if(lowered.id() == ID_if)
       {
         const auto &guarded = to_if_expr(lowered);
-        auto lhs = synth_lhs_expr(guarded.true_case());
-        lhs.set("#veval_write_in_range", synth_expr(guarded.cond(), symbol_statet::CURRENT));
+        auto lhs = guarded.true_case();
+        lhs.set("#veval_write_in_range", guarded.cond());
         return lhs;
       }
       // A statically out-of-range read has folded to the element default.
       const auto &array = to_verilog_array_type(select.src().type());
-      auto lhs = index_exprt{synth_lhs_expr(select.src()), from_integer(0, array.index_type()), array.element_type()};
+      auto lhs = index_exprt{
+        select.src(), from_integer(0, array.index_type()), array.element_type()};
       lhs.set("#veval_write_in_range", false_exprt{});
       return lhs;
     }
-    return synth_lhs_expr(std::move(lowered));
+    return lowered;
   }
   else if(expr.id() == ID_member)
   {

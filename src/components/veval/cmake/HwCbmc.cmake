@@ -47,7 +47,6 @@ set(frontend_sources
     verilog/verilog_preprocessor.cpp
     verilog/verilog_preprocessor_tokenizer.cpp
     verilog/verilog_rtl.cpp
-    verilog/verilog_scope.cpp
     verilog/verilog_simplifier.cpp
     verilog/verilog_standard.cpp
     verilog/verilog_symbol_table.cpp
@@ -153,7 +152,12 @@ FLEX_TARGET(VerilogPreprocessor "${hwcbmc_src}/verilog/verilog_preprocessor_toke
     COMPILE_FLAGS "-Pyyverilog_preprocessor")
 ADD_FLEX_BISON_DEPENDENCY(VerilogScanner VerilogParser)
 
+# verilog_scope.cpp includes the token header with quotes. Compile it beside
+# Bison's output so a header left by the submodule's Make build cannot win.
+configure_file("${hwcbmc_src}/verilog/verilog_scope.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/verilog_scope.cpp" COPYONLY)
 add_library(hw_cbmc_frontend STATIC ${frontend_sources} ${cbmc_sources}
+    "${CMAKE_CURRENT_BINARY_DIR}/verilog_scope.cpp"
     "${VEVAL_SRC}/frontend/rtl/HwCbmcVerilogSynthesis.cpp"
     "${VEVAL_SRC}/util/process/RunFrontendCommand.cpp"
     "${VEVAL_SRC}/util/verilog/ProductExpression.cpp"

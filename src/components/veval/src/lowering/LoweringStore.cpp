@@ -1,4 +1,5 @@
 #include "util/process/CurrentExecutablePath.h"
+#include "util/process/ParallelFor.h"
 #include "LoweringStore.h"
 #include "../check/run/RunPropertyChecks.h"
 #include "util/task/CommandArgumentsAndFiles.h"
@@ -73,6 +74,7 @@ std::string loweringKey(const Input &input,const J &inventory,const J &effective
 fs::path ensureLowering(Process &caller,const Input &input,const J &inventory,const J &effective,
                         const fs::path &binary,const fs::path &requested,
                         std::size_t generationThreads) {
+    const auto workers = veval::util::effectiveGenerationThreads(generationThreads);
     const auto bundle=fs::absolute(requested).lexically_normal();
     fs::create_directories(bundle);
     const auto key=loweringKey(input,inventory,effective);
@@ -113,7 +115,6 @@ fs::path ensureLowering(Process &caller,const Input &input,const J &inventory,co
         "--log",(p.out/"log").string(),"--log-format","sqlite",
         "--placement",text(effective["placement"])});
     if(input.multiclock)command.push_back("--multiclock");
-    if(generationThreads != 1)command.insert(command.end(),{"-j",std::to_string(generationThreads)});
     std::cout<<"lowering: generate all source properties -> "<<bundle<<std::endl;
     completed(p.run("transport",command));
     const auto sourceDb=p.out/"log/consflow.sqlite";
@@ -127,7 +128,6 @@ fs::path ensureLowering(Process &caller,const Input &input,const J &inventory,co
 #ifdef __APPLE__
     command.push_back("--inherit-process-session");
 #endif
-    if(generationThreads != 1)command.insert(command.end(),{"--generation-threads",std::to_string(generationThreads)});
     for(const auto &path:strings(shared["design"]))command.insert(command.end(),{"--design",path});
     completed(p.run("jobs",command));
     J timings=list();
@@ -156,7 +156,7 @@ fs::path ensureLowering(Process &caller,const Input &input,const J &inventory,co
     const auto manifest=object({{"schema",str("consflow-lowering/1")},{"key",str(key)},
         {"inputs",identities},{"generator",object({{"path",str(binary.string())},{"sha256",str(veval::verification::fileDigest(binary))}})},
         {"generation_tools",generationTools(binary)},
-        {"generation_threads",num(generationThreads)},
+        {"generation_threads",num(workers)},
         {"root",str(root)},{"top",str(input.top)},{"placement",effective["placement"]},
         {"wall_s",num(monotonic()-started)},{"stages",timings}});
     save(bundle/"manifest.json",manifest);
@@ -222,7 +222,7 @@ int lowerMain(int argc,char **argv) {
         if(argc==3 && std::string(argv[2])=="--help") {
             std::cout<<"veval lower DESIGN.sby [TASK] --out BUNDLE [-j N] [--placement single-path|split|root]\n"
                 "Generate all properties once; no solver is run. Existing identical bundles are reused.\n"
-                "-j N or -jN sets the worker limit for module synthesis, property lowering and output preparation (default 1).\n"
+                "-j N or -jN is accepted for compatibility. Generation runs in one thread.\n"
                 "--generation-threads N is an alias for -j N.\n"
                 "The SBY script must specify an existing module with prep -top TOP. Packages are not supported.\n";
 #ifdef __APPLE__

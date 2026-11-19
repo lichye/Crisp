@@ -49,7 +49,9 @@ public:
         auto trees = parse();
         auto symbols = elaborate_compilation_units(trees);
         const auto tops = top_level_modules(trees, cmdline);
-        CHECK_RETURN(tops.size() == 1);
+        if (tops.size() != 1)
+            throw std::runtime_error("elaborate: expected one top module, found " +
+                                     std::to_string(tops.size()));
         const auto top = verilog_module_symbol(tops.front());
         const auto root = verilog_module_symbol(verilog_root_module_name());
         const auto rootStandard = trees.front().standard;

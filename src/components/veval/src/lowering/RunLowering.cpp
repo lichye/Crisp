@@ -124,7 +124,6 @@ int runLowering(const CommandLineOptions& invocation) {
 
     auto design = generation::timed("frontend.elaborate", [&] {
         auto options = invocation.options;
-        options.threads = invocation.generationThreads.value_or(1);
         return veval::frontend::ElaboratedDesign::elaborate(options);
     });
     auto set = generation::timed("frontend.monitors", [&] {
