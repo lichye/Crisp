@@ -174,12 +174,15 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter) 
                 if (!p.witness_trace) p.witness_trace = reconstruct(cmd, *system, p, messages);
                 write_wave(*p.witness_trace, scratch / (std::to_string(index) + ".vcd"), message, ns);
                 verdict = "refuted";
-            } else if (p.is_proved() && task.mode.value != Mode::bmc) {
+            } else if (task.mode.value == Mode::bmc && (p.is_proved_with_bound() || p.is_proved())) {
+                verdict = "passed";
+                reason = "bmc depth " + std::to_string(task.depth->value);
+            } else if (p.is_proved()) {
                 verdict = "proved";
             } else {
                 verdict = "unknown";
-                if (task.mode.value == Mode::bmc && (p.is_proved_with_bound() || p.is_proved()))
-                    reason = "no counterexample through depth " + std::to_string(task.depth->value);
+                if (p.is_proved_with_bound())
+                    reason = "no counterexample through depth " + std::to_string(p.bound);
                 else if (task.mode.value == Mode::kind && p.is_inconclusive())
                     reason = "k-induction inconclusive at depth " + std::to_string(task.depth->value);
                 else reason = "EBMC: " + p.status_as_string();
