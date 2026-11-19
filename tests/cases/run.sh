@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ulimit -c 0
 root=$(cd -- "$(dirname -- "$0")/../.." && pwd -P)
-work=$(mktemp -d /tmp/crisp-cases.XXXXXXXX)
+tmp_base=${TMPDIR:-$root/build}
+mkdir -p -- "$tmp_base"
+work=$(mktemp -d "$tmp_base/crisp-cases.XXXXXXXX")
 trap 'rm -r -- "$work"' EXIT
+mkdir -p "$work/tmp"
+export TMPDIR="$work/tmp"
 cd -- "$work"
 
 run() {

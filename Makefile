@@ -54,14 +54,14 @@ deps: ebmc smart-deps
 	SMART_DEPS_ROOT="$(abspath $(SMART_DEPS_ROOT))" CVC5_ROOT="$(abspath $(CVC5_ROOT))" "$(SMART)/install.sh" --deps-only
 
 smart-deps:
+	@if test -L "$(SMART_DEPS_ROOT)"; then unlink "$(SMART_DEPS_ROOT)"; fi
 	SMART_DEPS_ROOT="$(abspath $(SMART_DEPS_ROOT))" CVC5_ROOT="$(abspath $(CVC5_ROOT))" "$(SMART)/install.sh" --build-deps
 
-$(VEVAL)/build:
-	@cache=$$(mktemp -d "/var/tmp/crisp-$(notdir $(@D))-$(notdir $@).XXXXXXXX"); \
-	if test -L "$@" && ! test -e "$@"; then unlink "$@"; fi; \
-	if ! ln -sT "$$cache" "$@"; then rmdir "$$cache"; test -d "$@"; fi
+.PHONY: $(SMART)/build $(VEVAL)/build
+$(SMART)/build $(VEVAL)/build:
+	@if test -L "$@"; then unlink "$@"; fi; mkdir -p "$@"
 
-smart: ebmc smart-deps
+smart: ebmc smart-deps | $(SMART)/build
 	$(CMAKE) -S "$(SMART)" -B "$(SMART)/build" -DCMAKE_BUILD_TYPE=Release \
 		-DHWCBMC_DIR="$(abspath $(HWCBMC))" -DSMART_DEPS_ROOT="$(abspath $(SMART_DEPS_ROOT))" \
 		-DCVC5_ROOT="$(abspath $(CVC5_ROOT))"
