@@ -1,4 +1,7 @@
 #include "ElaboratedDesign.h"
+#include "HwCbmcVerilogSynthesis.h"
+#include "util/MeasureGeneration.h"
+#include "util/verilog/ExpressionPrinter.h"
 
 #include <util/cmdline.h>
 #include <util/config.h>
@@ -10,7 +13,9 @@
 #include <langapi/mode.h>
 #include <verilog/verilog_language.h>
 #include <verilog/verilog_ebmc_language.h>
-#include <verilog/verilog_preprocessor.h>
+#include <verilog/top_level_modules.h>
+#include <verilog/verilog_bind.h>
+#include <verilog/verilog_typecheck_base.h>
 
 #include <sstream>
 #include <stdexcept>
@@ -34,6 +39,56 @@ void releaseIrep(irept& root, std::vector<irept>& pending) {
         for (auto& entry : node.get_named_sub()) pending.push_back(std::move(entry.second));
     }
 }
+// The shared frontend owns parsing, binding and type checking. Veval consumes
+// its typed modules with the symbolic evaluator used by property transport.
+class DesignLanguage final : public verilog_ebmc_languaget {
+public:
+    using verilog_ebmc_languaget::verilog_ebmc_languaget;
+
+    std::optional<transition_systemt> transition_system() override {
+        auto trees = parse();
+        auto symbols = elaborate_compilation_units(trees);
+        const auto tops = top_level_modules(trees, cmdline);
+        CHECK_RETURN(tops.size() == 1);
+        const auto top = verilog_module_symbol(tops.front());
+        const auto root = verilog_module_symbol(verilog_root_module_name());
+        const auto rootStandard = trees.front().standard;
+        auto topStandard = rootStandard;
+        for (const auto& tree : trees) {
+            std::set<std::string> modules;
+            tree.modules_provided(modules);
+            if (modules.count(id2string(top))) {
+                topStandard = tree.standard;
+                break;
+            }
+        }
+        profile::timed("frontend.typecheck", [&] {
+            elaborate_module_hierarchy(trees, tops, symbols);
+            check_bind_directives(symbols);
+        });
+
+        // Parameterized instances and binds are now elaborated. The evaluator
+        // needs their typed values, while parser source templates can go.
+        trees.clear();
+        std::vector<irep_idt> sources;
+        for (const auto& entry : symbols.symbols)
+            if (entry.second.type.id() == ID_module_source)
+                sources.push_back(entry.first);
+        for (const auto& source : sources) symbols.remove(source);
+
+        profile::Phase synthesis("frontend.synthesis");
+        const bool ignoreInitial = cmdline.isset("ignore-initial");
+        const bool initialZero = cmdline.isset("initial-zero");
+        verilog_synthesis(symbols, top, topStandard, ignoreInitial, initialZero, message_handler);
+        create_root_module(tops, symbols);
+        transition_systemt result;
+        result.symbol_table = std::move(symbols);
+        result.main_symbol = result.symbol_table.lookup(root);
+        result.trans_expr = verilog_synthesis(result.symbol_table, root, rootStandard,
+                                              ignoreInitial, initialZero, message_handler);
+        return result;
+    }
+};
 } // namespace
 
 // The frontend reads its options straight off a cmdlinet rather than from a
@@ -77,19 +132,18 @@ ElaboratedDesign::~ElaboratedDesign() = default;
 static void registerLanguages() {
     static bool done = false;
     if (done) return;
-    register_language(new_verilog_language);
+    class MonitorLanguage final : public verilog_languaget {
+        bool from_expr(const exprt& expr, std::string& code, const namespacet& ns) override {
+            code = describeExpression(expr, ns);
+            return false;
+        }
+    };
+    register_language([]() -> std::unique_ptr<languaget> { return std::make_unique<MonitorLanguage>(); });
     done = true;
 }
 
 ElaboratedDesign ElaboratedDesign::elaborate(const ElaborateOptions& options) {
     registerLanguages();
-
-    // Each call is its own compilation unit. Without this the macros of the
-    // previous elaboration are still defined, so a header guarded against
-    // double inclusion is skipped and whatever it declares is missing --
-    // which shows up as a syntax error on a type that was never declared,
-    // nowhere near the cause.
-    verilog_preprocessort::new_compilation_unit();
 
     if (options.top.empty())
         throw std::runtime_error("elaborate: a top module is required");
@@ -118,16 +172,10 @@ ElaboratedDesign ElaboratedDesign::elaborate(const ElaborateOptions& options) {
 
     const char* spec =
         "(top):(module):I:D:(systemverilog)(reset):(ignore-initial)"
-        "(initial-zero)(veval-release-source-trees)(veval-generation-threads):";
+        "(initial-zero)";
     if (impl->cmdline.parse(static_cast<int>(impl->argv.size()),
                             impl->argv.data(), spec))
         throw std::runtime_error("elaborate: could not set up the frontend");
-    // This consumer needs the elaborated hierarchy, not the parser's source
-    // forest. Release that forest after typechecking, before synthesis adds
-    // the transition relation. The ordinary EBMC diagnostic path retains it.
-    impl->cmdline.set("veval-release-source-trees");
-    impl->cmdline.set("veval-generation-threads", std::to_string(options.threads));
-
     impl->messageHandler =
         std::make_unique<ui_message_handlert>(impl->cmdline, "veval");
     impl->messageHandler->set_verbosity(options.verbosity);
@@ -139,7 +187,7 @@ ElaboratedDesign ElaboratedDesign::elaborate(const ElaborateOptions& options) {
     // catch(std::exception) does not see it and the process terminates.
     // Translate them all so callers see one exception type.
     try {
-        verilog_ebmc_languaget languages(impl->cmdline, *impl->messageHandler);
+        DesignLanguage languages(impl->cmdline, *impl->messageHandler);
         impl->transitionSystem = languages.transition_system();
     } catch (const ebmc_errort& error) {
         std::ostringstream what;

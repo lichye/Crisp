@@ -18,10 +18,8 @@ Start at [main.cpp](main.cpp). For generation, read
 | [util/](util/) | CLI/input adaptation, process/file support, shared storage, Verilog expression output, SBY adaptation and Yosys plugins. |
 | [../tools/evaluation/](../tools/evaluation/) | Separate experiment scheduling and measurement programs. |
 
-Imported dependencies are identified separately: `frontend/hw_cbmc/` contains
-the Verilog/SVA frontend, and `util/cbmc/` contains its expression libraries.
-They are built from source by CMake; `third_party/hw-cbmc` and its embedded
-model checker are removed. SAT reference code lives only under `test/support/`.
+CMake compiles the Verilog/SVA frontend and CBMC expression libraries from
+Crisp's pinned [hw-cbmc](../../hw-cbmc/) and [CBMC](../../hw-cbmc/lib/cbmc/).
 
 The largest former flat directories are grouped into concrete responsibilities
 (such as check preparation, SBY, processes and storage). Each directory README lists its

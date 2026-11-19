@@ -10,7 +10,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 set(VEVAL_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-add_subdirectory(src/frontend/hw_cbmc)
+include(cmake/HwCbmc.cmake)
 target_link_libraries(hw_cbmc_frontend PUBLIC Threads::Threads)
 
 # --- one library per role ---------------------------------------------------

@@ -18,7 +18,6 @@
 #include <util/cmdline.h>
 #include <util/namespace.h>
 #include <util/run.h>
-#include <verilog/expr2verilog.h>
 #include <verilog/sva_expr.h>
 #include <verilog/verilog_language.h>
 #include <util/message.h>
@@ -91,7 +90,7 @@ struct Compiler {
             if(found.second) declarations<<definition;
             else if(found.first->second!=definition) throw std::runtime_error("pure function name collision");
         }
-        return expr2verilog(veval::frontend::prepareTypedPrint(std::move(printed.expression)),ns);
+        return veval::frontend::productExpression(veval::frontend::prepareTypedPrint(std::move(printed.expression)),ns);
     }
 
     std::string name(const std::string& suffix) {

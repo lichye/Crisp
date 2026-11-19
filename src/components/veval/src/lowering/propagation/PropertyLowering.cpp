@@ -21,7 +21,6 @@
 #include <array>
 #include <atomic>
 #include <functional>
-#include <future>
 #include <optional>
 #include <numeric>
 
@@ -34,7 +33,6 @@
 #include <string_view>
 #include <unordered_set>
 #include <unordered_map>
-#include <thread>
 
 namespace veval {
 namespace lowering {
@@ -801,85 +799,14 @@ std::uint64_t normalizeDrives(ForwardDrives& forward) {
     return edges;
 }
 
-ForwardDrives parallelForwardDrives(const exprt& relation, bool delayed,
-                                    std::size_t requestedWorkers) {
-    std::vector<const exprt*> assignments;
-    forEachEquality(relation, [&](const exprt& expr) { assignments.push_back(&expr); });
-    constexpr std::size_t chunkSize = 64;
-    const auto workers = std::min({requestedWorkers,
-        std::size_t{std::max(1u, std::thread::hardware_concurrency())},
-        (assignments.size() + chunkSize - 1) / chunkSize});
-    profile::count("attribution.workers", workers);
-    struct Partial {
-        ForwardDrives forward;
-        std::uint64_t hits = 0, visited = 0;
-    };
-    std::atomic<std::size_t> next{0};
-    std::atomic<bool> cancelled{false};
-    std::vector<std::future<Partial>> pending;
-    pending.reserve(workers);
-    // Keep dependency collection read-only even though IR ownership is atomic.
-    // Workers ONLY borrow const nodes and copy existing scalar irep_idt IDs:
-    // no expression copies, interning, IR writes or shared profile calls.
-    // All futures join before the caller can inspect/mutate/release the IR.
-    for (std::size_t i = 0; i < workers; ++i) {
-        pending.push_back(std::async(std::launch::async, [&] {
-            try {
-                Partial result;
-                OperandSymbols symbols(false);
-                while (!cancelled.load(std::memory_order_relaxed)) {
-                    const auto first = next.fetch_add(chunkSize, std::memory_order_relaxed);
-                    if (first >= assignments.size()) break;
-                    const auto end = std::min(first + chunkSize, assignments.size());
-                    for (auto at = first; at < end; ++at)
-                        equalityDrives(*assignments[at], delayed, symbols,
-                            [&](const irep_idt& target, const irep_idt& source) {
-                                result.forward[source].push_back(target);
-                            });
-                }
-                result.hits = symbols.cacheHits();
-                result.visited = symbols.visitedNodes();
-                normalizeDrives(result.forward);
-                return result;
-            } catch (...) {
-                cancelled.store(true, std::memory_order_relaxed);
-                throw;
-            }
-        }));
-    }
-    ForwardDrives forward;
-    for (auto& task : pending) {
-        auto part = task.get();
-        profile::count("attribution.symbol-cache-hits", part.hits);
-        profile::count("attribution.symbol-nodes", part.visited);
-        for (auto& [source, targets] : part.forward) {
-            auto found = forward.find(source);
-            if (found == forward.end()) {
-                forward.emplace(source, std::move(targets));
-            } else {
-                auto& dest = found->second;
-                dest.insert(dest.end(), targets.begin(), targets.end());
-                // Release each consumed vector; merging must not retain a
-                // second full graph until the entire worker map is gone.
-                std::vector<irep_idt>().swap(targets);
-            }
-        }
-    }
-    return forward;
-}
-
-ForwardDrives forwardDrives(const exprt& relation, bool delayed, std::size_t workers) {
+ForwardDrives forwardDrives(const exprt& relation, bool delayed, std::size_t) {
     profile::Phase timer(delayed ? "attribution.delayed-drives"
                                 : "attribution.combinational-drives");
     ForwardDrives forward;
-    if (workers > 1) {
-        forward = parallelForwardDrives(relation, delayed, workers);
-    } else {
-        profile::count("attribution.workers", 1);
-        forEachDrive(relation, delayed, [&](const irep_idt& target, const irep_idt& source) {
-            forward[source].push_back(target);
-        });
-    }
+    profile::count("attribution.workers", 1);
+    forEachDrive(relation, delayed, [&](const irep_idt& target, const irep_idt& source) {
+        forward[source].push_back(target);
+    });
     profile::count("attribution.dependency-edges", normalizeDrives(forward));
     return forward;
 }

@@ -18,6 +18,10 @@ std::optional<StaticArrayElement> staticArrayElement(const exprt &expression);
 // Make implicit bit-vector conversions visible to the existing SV printer.
 // Resize using the operand's signing first, then change the interpretation.
 exprt prepareTypedPrint(exprt expression);
+// Emit executable SystemVerilog from a prepared expression.
+std::string productExpression(const exprt& expression, const namespacet& ns);
+// Describe shared function bodies without recursively expanding their definition.
+std::string describeExpression(const exprt& expression, const namespacet& ns);
 struct FunctionPrint {
     exprt expression;
     std::map<std::string, std::string> definitions;

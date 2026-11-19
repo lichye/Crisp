@@ -71,6 +71,6 @@ test-smart: smart crisp
 	$(CMAKE) --build "$(SMART)/build" --target test_smart_ebmc --parallel "$(JOBS)"
 	bash tests/smart/run.sh
 
-veval: | $(VEVAL)/build
+veval: | $(VEVAL)/build $(CBMC)/src/Makefile
 	$(CMAKE) -S "$(VEVAL)" -B "$(VEVAL)/build" -DCMAKE_BUILD_TYPE=Release -DCRISP_DRIVER_SOURCE_DIR:PATH=
 	$(CMAKE) --build "$(VEVAL)/build" --parallel "$(JOBS)"

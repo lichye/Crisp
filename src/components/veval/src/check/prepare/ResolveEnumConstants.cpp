@@ -50,11 +50,11 @@ static J resolve(const J &request) {
         bool include=false;for(const auto &dir:includes)if(path.rfind(absolute(dir)+"/",0)==0)include=true;
         if(include)check(path);
     }
-    verilog_preprocessort::new_compilation_unit();verilog_scopest scopes;
+    verilog_macro_tablet unitMacros;verilog_scopest scopes;
     symbol_tablet symbols;stream_message_handlert messages(std::cerr);messages.set_verbosity(1);
     for(const auto &value:items(front["file_order"])) {
         const auto path=absolute(text(value));check(path);std::ifstream in(path);std::stringstream preprocessed;
-        verilog_preprocessort preprocessor(in,preprocessed,messages,path,includes,macros);
+        verilog_preprocessort preprocessor(in,preprocessed,messages,path,includes,macros,&unitMacros);
         preprocessor.preprocessor();
         verilog_parsert parser(verilog_standardt::SV2023,scopes,messages);
         parser.set_file(path);parser.in=&preprocessed;parser.grammar=verilog_parsert::LANGUAGE;verilog_scanner_init();

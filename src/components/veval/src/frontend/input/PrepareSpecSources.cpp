@@ -15,6 +15,17 @@
 
 namespace veval::workflow {
 namespace {
+class SourceLanguage final : public verilog_languaget {
+public:
+    bool preprocessUnit(std::istream& in, const std::string& path, std::ostream& out,
+                        message_handlert& messages, verilog_macro_tablet& macros) {
+        macros.clear_initial_defines();
+        verilog_preprocessort pp(in, out, messages, path, include_paths, initial_defines, &macros);
+        try { pp.preprocessor(); }
+        catch (int) { return true; }
+        return false;
+    }
+};
 struct Token { std::string text; size_t begin, end; };
 std::vector<Token> tokens(const std::string &text) {
     std::vector<Token> out;
@@ -93,9 +104,9 @@ int prepareSources(int argc, char **argv) {
     // FORMAL/SYNTHESIS/YOSYS macros apply to that command's files only. The
     // preprocessor's shared table carries exactly the source-text macros, so
     // it is reset once here, never between files.
-    verilog_preprocessort::new_compilation_unit();
+    verilog_macro_tablet sourceMacros;
     for (const auto &unit : items(request["units"])) {
-        verilog_languaget language; stream_message_handlert messages(std::cerr);
+        SourceLanguage language; stream_message_handlert messages(std::cerr);
         optionst options;
         options.set_option("force-systemverilog", unit["systemverilog"].is_true());
         auto include = strings(unit["include"]), defines = strings(unit["defines"]);
@@ -105,7 +116,7 @@ int prepareSources(int argc, char **argv) {
         const auto path = text(unit["path"]);
         std::ifstream source(path); require(bool(source), "source unavailable: " + path);
         std::ostringstream preprocessed;
-        require(!language.preprocess(source, path, preprocessed, messages), "preprocessing failed: " + path);
+        require(!language.preprocessUnit(source, path, preprocessed, messages, sourceMacros), "preprocessing failed: " + path);
         // hw-cbmc emits `line markers for its parser but its public preprocess
         // entry does not accept those markers on a second read. They carry
         // diagnostics only; all macros have already expanded at this point.
