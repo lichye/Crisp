@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ulimit -c 0
 root=$(cd -- "$(dirname -- "$0")/../.." && pwd -P)
-scratch=$(mktemp -d /tmp/crisp-front.XXXXXXXX)
+tmp_base=${TMPDIR:-$root/build}
+mkdir -p -- "$tmp_base"
+scratch=$(mktemp -d "$tmp_base/crisp-front.XXXXXXXX")
 trap 'rm -r -- "$scratch"' EXIT
-mkdir -p "$scratch"/{work,capture,cases/rtl,cases/props}
+mkdir -p "$scratch"/{work,capture,cases/rtl,cases/props,tmp}
+export TMPDIR="$scratch/tmp"
 cp -- "$root/tests/front/fifo.salt" "$scratch/cases/"
 sed 's/$/\r/' "$root/tests/front/fifo.salt" > "$scratch/cases/fifo-crlf.salt"
 touch "$scratch/cases/rtl/fifo.sv" "$scratch/cases/props/fifo_props.sv" "$scratch/cases/exists.txt"
