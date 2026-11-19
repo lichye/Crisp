@@ -11,6 +11,7 @@ struct Reporter {
     void send(std::size_t index, const char* status, const std::string& detail = {}) const;
 };
 
-void run_engine(const front::Task&, const std::filesystem::path& scratch, Reporter);
+// Returns false when the task's undriven policy rejects the design.
+bool run_engine(const front::Task&, const std::filesystem::path& scratch, Reporter);
 
 } // namespace crisp::check

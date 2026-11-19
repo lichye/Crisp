@@ -67,6 +67,7 @@ void check_fifo(const fs::path& file, std::uint64_t cpus, const FifoLines& ln) {
         origin(*task.reset, salt, ln.reset);
         require(task.includes.empty() && task.defines.empty() && task.params.empty(), "fifo design lists");
         require(task.level.value == Level::automatic && !task.level.source && !task.depth, "fifo level/depth");
+        require(task.undriven.value == Undriven::seq && !task.undriven.source, "default undriven policy");
     }
     const auto& first = tasks[0];
     require(first.name.value().value == "task1", "first task name");
@@ -122,6 +123,19 @@ void positive_cases(const fs::path& dir, std::uint64_t cpus) {
         require(pair.size() == 2 && pair[0].timeout_seconds.value == 5 &&
                 pair[1].timeout_seconds.value == 100, "9.6 scope priority");
     }
+    const auto salt = fs::absolute(input).lexically_normal();
+    const auto check_undriven = [&](const std::string& settings, std::size_t task_line, std::size_t common_line) {
+        write(input, tasks + "[options]\n" + settings + files);
+        const auto pair = ready(input);
+        require(pair.size() == 2 && pair[0].undriven.value == Undriven::error &&
+                pair[1].undriven.value == Undriven::constant, "task overrides the common undriven policy");
+        origin(pair[0].undriven, salt, task_line);
+        origin(pair[1].undriven, salt, common_line);
+    };
+    check_undriven("undriven const\ntask1: undriven error\n", 6, 5);
+    check_undriven("task1: undriven error\nundriven const\n", 5, 6);
+    check_undriven("task1:\nundriven error\n--\nundriven const\n", 6, 8);
+
     write(input, files);
     const auto unnamed = ready(input);
     require(unnamed.size() == 1 && !unnamed[0].name, "9.7 unnamed task");
@@ -162,7 +176,11 @@ const InvalidCase invalid[] = {
     {"14-no-tasks", "[options]\ntask1:\nmode bdd\n", 2, "task1"},
     {"15-separator", "[files]\n--\n", 2, "--"},
     {"16-empty-tasks", "[files]\nrtl/fifo.sv\n[tasks]\n", 3, "tasks"},
-    {"17-preamble", "top fifo\n[files]\nrtl/fifo.sv\n", 1, "section"}
+    {"17-preamble", "top fifo\n[files]\nrtl/fifo.sv\n", 1, "section"},
+    {"18-undriven", "[options]\nundriven unknown\n", 2, "expected seq, const, error"},
+    {"19-undriven-duplicate", "[options]\nundriven seq\nundriven const\n", 3, "duplicate setting"},
+    {"20-undriven-missing", "[options]\nundriven\n", 2, "expected one value"},
+    {"21-undriven-extra", "[options]\nundriven seq const\n", 2, "expected one value"}
 };
 
 } // namespace

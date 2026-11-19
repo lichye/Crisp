@@ -32,7 +32,8 @@ void print_task(const Task& task) {
         std::cout << "  param    " << param.value.name << ' ' << param.value.value << '\n';
 
     std::cout << "  options  mode " << spelling(task.mode.value) << ", level " << spelling(task.level.value)
-              << ", smart " << spelling(task.smart.value) << ", veval " << spelling(task.veval.value);
+              << ", smart " << spelling(task.smart.value) << ", veval " << spelling(task.veval.value)
+              << ", undriven " << spelling(task.undriven.value);
     if (task.depth) std::cout << ", depth " << task.depth->value;
     std::cout << "\n  resource thread " << task.thread.value << ", ram ";
     if (task.ram_mib) std::cout << task.ram_mib->value << " MiB";
@@ -82,7 +83,7 @@ int main(int argc, char** argv) {
     for (const auto& task : tasks) {
         print_task(task);
         try {
-            crisp::check::run(task, summary);
+            crisp::check::run(task, summary, tasks.size() > 1);
         } catch (const std::exception& error) {
             std::cerr << "crisp: " << error.what() << '\n';
             summary.error = true;
