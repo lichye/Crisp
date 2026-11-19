@@ -2,3 +2,4 @@
 	path = src/components/hw-cbmc
 	url = https://github.com/lichye/ebmc.git
 	ignore = untracked
+	branch = crisp
