@@ -69,7 +69,7 @@ namespace smart { namespace pipeline {
 int runSmartBlock(int argc, char* argv[]){
   // 8 is the historical contract; the two trailing arguments are optional so
   // an old caller (or a hand-run smart.out) still works unchanged.
-  if(argc<8 || argc>10){
+  if(argc<8){
     print("Usage: smart.out <currentDir> <topmodule> <result_file> <variables_file> <core_id> <latency> <config> [mine_module] [inject_module]\n");
     return -1;
   }
@@ -114,17 +114,21 @@ int runSmartBlock(int argc, char* argv[]){
   int negativeStateNumber = static_cast<int>(options.getInt("negative_state_number"));
   unsigned seed = static_cast<unsigned>(options.getInt("seed"));
 
+  const std::vector<std::string> designFiles =
+      argc > 10 ? std::vector<std::string>(argv + 10, argv + argc) : std::vector<std::string>{};
   bool isLTL = (latency > 0);
   verilogSrcPath = currentDir + "/runtime/verilog/"+moduleName+".sv";
   // A prepared compilation unit can have a different name from its module.
   if(injectModule != moduleName || !fs::is_regular_file(verilogSrcPath)){
-    std::vector<std::string> candidates;
-    for(const auto& entry : fs::directory_iterator(currentDir + "/runtime/verilog")){
-      const auto ext = entry.path().extension();
-      if(entry.is_regular_file() && (ext == ".sv" || ext == ".v"))
-        candidates.push_back(entry.path().string());
+    auto candidates = designFiles;
+    if(candidates.empty()){
+      for(const auto& entry : fs::directory_iterator(currentDir + "/runtime/verilog")){
+        const auto ext = entry.path().extension();
+        if(entry.is_regular_file() && (ext == ".sv" || ext == ".v"))
+          candidates.push_back(entry.path().string());
+      }
+      std::sort(candidates.begin(), candidates.end());
     }
-    std::sort(candidates.begin(), candidates.end());
     verilogSrcPath = smart::emit::fileDeclaringModule(candidates, injectModule);
     if(verilogSrcPath.empty()){
       std::cerr << "Cannot find the source declaring module " << injectModule << "\n";
@@ -152,6 +156,7 @@ int runSmartBlock(int argc, char* argv[]){
   timer = new Timer();  
 
 
+  checker->setDesignFiles(designFiles);
   checker->setTopModule(moduleName);
   checker->setInjectModule(injectModule);
   checker->setTimer(timer);
@@ -198,19 +203,21 @@ int runSmartBlock(int argc, char* argv[]){
   print("\twe get assertion:" + sygusfunc->getBodyVerilogExpr());
 
   std::string SMTVCDfilePath = generateSMTResultPath();
-  bool verifiedResult = checker->checkExprSafety(sygusfunc,SMTVCDfilePath);
-  print("\tIts correctness is: "+std::to_string(verifiedResult));
-  printDebug("\tTrace goes to VCD file: "+SMTVCDfilePath,1);
+  using helper::EbmcStatus;
+  const auto scope = mineModule == moduleName || mineModule.rfind(moduleName + ".", 0) == 0
+      ? mineModule : moduleName + "." + mineModule;
+  auto status = checker->checkExprSafety(sygusfunc, SMTVCDfilePath, scope);
+  print("\tIts correctness is: " + std::to_string(status == EbmcStatus::Verified));
 
   int timeOut = 0;
   int mostRun = signals->size();
 
-  while(!verifiedResult&&RefinementSet){
-    if(timeOut++>mostRun||verifiedResult||timeOut>refinementDepth){
+  while(status == EbmcStatus::Refuted && RefinementSet){
+    if(timeOut++>mostRun||timeOut>refinementDepth){
       print("Time out\n");
       break;
     }
-    print("In looptime "+std::to_string(timeOut)+":");
+    print("In looptime "+std::to_string(timeOut)+": using EBMC counterexample "+SMTVCDfilePath+"\n");
     module->addTrace(SMT,SMTVCDfilePath);
     Constrains c = module->getConstrain(SMTVCDfilePath,signals);
     Constrains new_c = checker->fixupConstrains(c);
@@ -227,12 +234,12 @@ int runSmartBlock(int argc, char* argv[]){
     print("\tGet assertion:" + sygusfunc->getBodyVerilogExpr());
 
     SMTVCDfilePath = generateSMTResultPath();
-    verifiedResult = checker->checkExprSafety(sygusfunc,SMTVCDfilePath);
-    print("\tIts correctness is: "+std::to_string(verifiedResult));
+    status = checker->checkExprSafety(sygusfunc, SMTVCDfilePath, scope);
+    print("\tIts correctness is: " + std::to_string(status == EbmcStatus::Verified));
     printDebug("\tTrace goes to VCD file: "+SMTVCDfilePath,1);
 
   }
-  if(verifiedResult){
+  if(status == EbmcStatus::Verified){
     writeStringToFile(resultFileDir,sygusfunc->getBodyVerilogExpr(),std::ios::out);
     writeStringToFile("runtime/SygusResult.sl",Cvc5result,std::ios::app);
     writeStringToFile("runtime/CompareResult.txt",sygusfunc->getBodyVerilogExpr()+":\n"+Cvc5result+"\n",std::ios::app);
@@ -242,11 +249,11 @@ int runSmartBlock(int argc, char* argv[]){
     print("All assertion is not verified\n");
   }
 
-  //append_with_lock_posix("log.txt","This loop's Result: "+std::to_string(verifiedResult)+"\n"+timer->printTime()+"\n");
-  writeStringToFile("log.txt","This "+core_id+" 's Result: "+std::to_string(verifiedResult)+"\n"+timer->printTime()+"\n",std::ios::out|std::ios::app);
+  //append_with_lock_posix("log.txt","This loop's Result: "+std::to_string(status == EbmcStatus::Verified)+"\n"+timer->printTime()+"\n");
+  writeStringToFile("log.txt","This "+core_id+" 's Result: "+std::to_string(status == EbmcStatus::Verified)+"\n"+timer->printTime()+"\n",std::ios::out|std::ios::app);
   delete sygusfunc;
   fs::remove_all(smt_path);
-  return verifiedResult ? 0 : 1;
+  return status == EbmcStatus::Verified ? 0 : 1;
 }
 }}  // namespace smart::pipeline
 

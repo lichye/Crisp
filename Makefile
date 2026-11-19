@@ -1,6 +1,8 @@
 JOBS ?= 4
 CMAKE ?= cmake
 SMART := src/components/smartVerilog
+SMART_DEPS_ROOT ?= $(SMART)/.deps
+CVC5_ROOT ?= src/components/cvc5/packages/1.4.2
 VEVAL := src/components/veval
 HWCBMC := src/components/hw-cbmc
 CBMC := $(HWCBMC)/lib/cbmc
@@ -8,7 +10,7 @@ VERSION := 0.1.0
 FRONT_OBJECTS := build/front/parse.o build/front/prepare.o
 APP_OBJECTS := build/main.o build/check/run.o $(FRONT_OBJECTS)
 
-.PHONY: crisp ebmc test test-front deps smart veval
+.PHONY: crisp ebmc test test-front deps smart smart-deps veval
 crisp: build/crisp
 
 $(HWCBMC)/src/ebmc/Makefile:
@@ -48,16 +50,21 @@ test: test-front
 
 -include $(APP_OBJECTS:.o=.d) build/tests/front.d
 
-deps: | $(SMART)/.deps $(SMART)/otherTools
-	JOBS="$(JOBS)" ./$(SMART)/install.sh --deps-only
+deps: ebmc smart-deps
+	SMART_DEPS_ROOT="$(abspath $(SMART_DEPS_ROOT))" CVC5_ROOT="$(abspath $(CVC5_ROOT))" "$(SMART)/install.sh" --deps-only
 
-$(SMART)/build $(VEVAL)/build $(SMART)/.deps $(SMART)/otherTools:
+smart-deps:
+	SMART_DEPS_ROOT="$(abspath $(SMART_DEPS_ROOT))" CVC5_ROOT="$(abspath $(CVC5_ROOT))" "$(SMART)/install.sh" --build-deps
+
+$(VEVAL)/build:
 	@cache=$$(mktemp -d "/var/tmp/crisp-$(notdir $(@D))-$(notdir $@).XXXXXXXX"); \
 	if test -L "$@" && ! test -e "$@"; then unlink "$@"; fi; \
 	if ! ln -sT "$$cache" "$@"; then rmdir "$$cache"; test -d "$@"; fi
 
-smart: | $(SMART)/build
-	$(CMAKE) -S "$(SMART)" -B "$(SMART)/build" -DCMAKE_BUILD_TYPE=Release $(if $(SMART_DEPS_ROOT),-DSMART_DEPS_ROOT="$(abspath $(SMART_DEPS_ROOT))") $(if $(CVC5_ROOT),-DCVC5_ROOT="$(abspath $(CVC5_ROOT))")
+smart: ebmc smart-deps
+	$(CMAKE) -S "$(SMART)" -B "$(SMART)/build" -DCMAKE_BUILD_TYPE=Release \
+		-DHWCBMC_DIR="$(abspath $(HWCBMC))" -DSMART_DEPS_ROOT="$(abspath $(SMART_DEPS_ROOT))" \
+		-DCVC5_ROOT="$(abspath $(CVC5_ROOT))"
 	$(CMAKE) --build "$(SMART)/build" --target smart --parallel "$(JOBS)"
 
 veval: | $(VEVAL)/build

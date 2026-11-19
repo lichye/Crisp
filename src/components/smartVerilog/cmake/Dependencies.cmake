@@ -5,13 +5,14 @@
 #
 set(SMART_DEPS_ROOT "${CMAKE_SOURCE_DIR}/.deps" CACHE PATH
     "Locally installed SMART dependencies")
-set(HWCBMC_DIR "${SMART_DEPS_ROOT}/hw-cbmc")
+set(HWCBMC_DIR "${CMAKE_SOURCE_DIR}/../hw-cbmc" CACHE PATH
+    "Crisp's built hw-cbmc checkout")
+get_filename_component(HWCBMC_DIR "${HWCBMC_DIR}" ABSOLUTE)
 set(HWCBMC_CBMC_DIR ${HWCBMC_DIR}/lib/cbmc)
 
 if(NOT EXISTS ${HWCBMC_CBMC_DIR}/src)
     message(FATAL_ERROR
-        "hw-cbmc is not installed under ${HWCBMC_DIR}. Run 'make deps' from the Crisp repository root, then retry the build, "
-        "or pass -DSMART_DEPS_ROOT=<dependency-prefix>.")
+        "hw-cbmc is missing under ${HWCBMC_DIR}. Run 'make ebmc' from the Crisp repository root.")
 endif()
 
 find_path(NLOHMANN_INCLUDE_DIR nlohmann/json.hpp
@@ -32,15 +33,16 @@ set(HWCBMC_LIBS
     ${HWCBMC_CBMC_DIR}/src/solvers/solvers.a
     ${HWCBMC_CBMC_DIR}/src/util/util.a
     ${HWCBMC_CBMC_DIR}/src/big-int/big-int.a
-    ${HWCBMC_CBMC_DIR}/src/json/json.a)
+    ${HWCBMC_CBMC_DIR}/src/json/json.a
+    ${HWCBMC_DIR}/src/ebmc/ebmc_language.o
+    ${HWCBMC_DIR}/src/ebmc/show_modules.o)
 
 set(HWCBMC_EBMC ${HWCBMC_DIR}/src/ebmc/ebmc)
 
-# install.sh builds a local copy. An existing installation may be shared
-# read-only by configuring SMART_DEPS_ROOT.
+# The same EBMC build supplies the frontend objects and the solver executable.
 foreach(artifact IN LISTS HWCBMC_LIBS HWCBMC_EBMC)
     if(NOT EXISTS "${artifact}")
-        message(FATAL_ERROR "Missing ${artifact}. Run 'make deps' from the Crisp repository root or point SMART_DEPS_ROOT at a complete installation.")
+        message(FATAL_ERROR "Missing ${artifact}. Run 'make ebmc' from the Crisp repository root.")
     endif()
 endforeach()
 

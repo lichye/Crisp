@@ -1,4 +1,5 @@
 #include "Pipeline.h"
+#include "SyGuSGenerater.h"
 
 #include "../Version.h"
 
@@ -243,24 +244,27 @@ ExitCode Pipeline::run(RunSummary& summary) {
     // the latter, and only the design knows the mapping.
     std::string injectModule = mineModule;
 
-    std::vector<std::string> designFiles =
-        inputs.size() > 1 ? inputs : designFilesFor(mainFile, top);
+    const bool discoverSiblings = inputs.size() == 1 && options_.getBool("discover_siblings");
+    const auto designFiles = discoverSiblings ? designFilesFor(mainFile, top) : inputs;
 
+
+    const auto simulatorName = options_.getString("simulator");
+    const bool useVerilator = simulatorName.empty() || simulatorName == "verilator";
 
     // ---- frontend ------------------------------------------------------
     frontend::ModuleInfo info;
+    std::vector<frontend::InstanceFreeReg> instanceRegs;
     frontend::HwcbmcOptions frontendOptions;
-    frontendOptions.autoDiscoverSiblings = inputs.size() <= 1;
+    frontendOptions.autoDiscoverSiblings = discoverSiblings;
     for (std::size_t i = 1; i < inputs.size(); ++i)
         frontendOptions.extraFiles.push_back(inputs[i]);
     try {
-        info = frontend::parseModuleFile(mainFile, top, frontendOptions);
+        info = frontend::parseModuleFile(mainFile, top, frontendOptions,
+                                         useVerilator ? &instanceRegs : nullptr);
     } catch (const std::exception& e) {
         std::cerr << "smart: " << e.what() << "\n";
         return ExitCode::UserError;
     }
-    if (!frontendOptions.elaborated)
-        say("warning: widths unresolved (" + frontendOptions.elaborationError + ")");
 
     if (info.ports.empty() && info.freeRegs.empty()) {
         std::cerr << "smart: module '" << top
@@ -286,6 +290,7 @@ ExitCode Pipeline::run(RunSummary& summary) {
         }
     }
     summary.workDir = work.root();
+    std::vector<std::string> workdirDesign;
 
     try {
         work.create();
@@ -300,7 +305,11 @@ ExitCode Pipeline::run(RunSummary& summary) {
                 source = frontend::injectAssumes(source, top, assumes,
                                                  options_.getString("clock"));
             const auto name = fs::path(file).filename().string();
-            writeFile(work.verilogDir() + "/" + name, source);
+            const auto copy = work.verilogDir() + "/" + name;
+            if (std::find(workdirDesign.begin(), workdirDesign.end(), copy) != workdirDesign.end())
+                throw std::runtime_error("design filenames collide in the work directory: " + name);
+            writeFile(copy, source);
+            workdirDesign.push_back(copy);
             writeFile(work.formalDir() + "/" + name, source);
         }
         writeFile(work.effectiveConfigFile(), options_.toJson());
@@ -339,10 +348,9 @@ ExitCode Pipeline::run(RunSummary& summary) {
     harness.simulationTimeoutSeconds =
         static_cast<int>(options_.getInt("simulation_timeout"));
 
-    const auto simulatorName = options_.getString("simulator");
     if (simulatorName == "iverilog" || simulatorName == "icarus") {
         harness.simulator = simgen::Simulator::Icarus;
-    } else if (simulatorName == "verilator" || simulatorName.empty()) {
+    } else if (useVerilator) {
         harness.simulator = simgen::Simulator::Verilator;
     } else {
         std::cerr << "smart: unknown simulator '" << simulatorName
@@ -350,59 +358,19 @@ ExitCode Pipeline::run(RunSummary& summary) {
         return ExitCode::UserError;
     }
 
-    // `(* anyseq *)` inside an instance is still a free input; the frontend
-    // only reports the top module's, so ask it again per instantiated module
-    // and translate each hit into the flattened path Verilator exposes.
-    // Without this a submodule's free register sits at zero for the whole
-    // trace, which is not "free" and quietly narrows every constraint drawn
-    // from it.
-    if (harness.simulator == simgen::Simulator::Verilator) {
-        const auto instances = simgen::enumerateInstances(designFiles, top,
-                                                          "verilator", work.root());
-        std::map<std::string, frontend::ModuleInfo> perModule;
-        for (const auto& instance : instances) {
-            if (instance.module == top) continue;
-            auto known = perModule.find(instance.module);
-            if (known == perModule.end()) {
-                frontend::ModuleInfo submodule;
-                try {
-                    frontend::HwcbmcOptions subOptions = frontendOptions;
-                    submodule = frontend::parseModuleFile(mainFile, instance.module,
-                                                          subOptions);
-                } catch (const std::exception&) {
-                    // A module we cannot parse simply contributes nothing.
-                }
-                known = perModule.emplace(instance.module, submodule).first;
-            }
-            if (known->second.freeRegs.empty()) continue;
-
-            // hier is dotted (top.genblk1.inst); Verilator flattens it.
-            std::string flat = instance.hierarchy;
-            for (auto& c : flat)
-                if (c == '.') c = '\1';
-            std::string path;
-            std::size_t at = 0;
-            while (at < flat.size()) {
-                const auto next = flat.find('\1', at);
-                if (!path.empty()) path += "__DOT__";
-                path += flat.substr(at, next == std::string::npos ? next : next - at);
-                if (next == std::string::npos) break;
-                at = next + 1;
-            }
-            for (const auto& reg : known->second.freeRegs) {
-                simgen::HierarchicalFreeReg hier;
-                hier.kind = reg.kind;
-                hier.width = reg.width;
-                hier.name = reg.name;
-                hier.flatPath = path + "__DOT__" + reg.name;
-                harness.hierFreeRegs.push_back(hier);
-            }
+    // Use the width of each elaborated instance, including parameter overrides.
+    for (const auto& entry : instanceRegs) {
+        std::string flatPath = top + "__DOT__";
+        for (const char c : entry.instance) {
+            if (c == '.') flatPath += "__DOT__";
+            else flatPath += c;
         }
-        if (!harness.hierFreeRegs.empty())
-            say("[" + timestamp() + "] driving " +
-                std::to_string(harness.hierFreeRegs.size()) +
-                " free registers inside instances");
+        harness.hierFreeRegs.push_back({entry.reg.kind, entry.reg.width,
+                                        flatPath + "__DOT__" + entry.reg.name, entry.reg.name});
     }
+    if (!harness.hierFreeRegs.empty())
+        say("[" + timestamp() + "] driving " +
+            std::to_string(harness.hierFreeRegs.size()) + " free registers inside instances");
 
     const auto policyName = options_.getString("trace_policy");
     if (policyName == "fuzz") {
@@ -428,11 +396,6 @@ ExitCode Pipeline::run(RunSummary& summary) {
     try {
         // Simulate the design as it sits in the workdir, so the traces match
         // the sources the blocks reason about.
-        std::vector<std::string> workdirDesign;
-        for (const auto& file : designFiles)
-            workdirDesign.push_back(work.verilogDir() + "/" +
-                                    fs::path(file).filename().string());
-
         // The workdir root, not sim_src: runSimulations makes its own
         // sim_src/ underneath for the assume-stripped copies.
         const auto sim = simgen::runSimulations(info, workdirDesign, work.root(),
@@ -537,6 +500,7 @@ ExitCode Pipeline::run(RunSummary& summary) {
     runner.injectModule = injectModule;
     runner.configPath = work.effectiveConfigFile();
     runner.logsDir = work.logsDir();
+    runner.designFiles = workdirDesign;
     runner.jobs = jobs;
     runner.coreTimeoutSeconds = static_cast<int>(options_.getInt("core_timeout"));
 
@@ -892,26 +856,28 @@ ExitCode Pipeline::run(RunSummary& summary) {
         check.scratchDir = work.formalDir();
         // The property goes into whichever file declares the target module,
         // and every other file is handed to EBMC untouched.
-        std::vector<std::string> inWorkdir;
-        for (const auto& file : designFiles)
-            inWorkdir.push_back(work.verilogDir() + "/" +
-                                fs::path(file).filename().string());
-        auto target = emit::fileDeclaringModule(inWorkdir, injectModule);
-        if (target.empty()) target = inWorkdir.front();
-        for (const auto& file : inWorkdir)
-            if (file != target) check.extraFiles.push_back(file);
+        auto target = emit::fileDeclaringModule(workdirDesign, injectModule);
+        if (target.empty()) throw std::runtime_error("cannot locate module " + injectModule);
+        check.extraFiles = workdirDesign;
+        const auto location = std::find(check.extraFiles.begin(), check.extraFiles.end(), target);
+        check.designFileIndex = static_cast<std::size_t>(location - check.extraFiles.begin());
+        check.extraFiles.erase(location);
 
         say("[" + timestamp() + "] checking " + std::to_string(assertions.size()) +
             " assertions against the original design");
 
         const auto checked = emit::checkAssertions(target, assertions, check);
-        std::size_t refuted = 0, timedOutChecks = 0, errors = 0;
+        std::size_t refuted = 0, unknown = 0, timedOutChecks = 0, errors = 0;
         for (const auto& result : checked) {
             switch (result.status) {
                 case emit::CheckStatus::Verified: verified.push_back(result.assertion); break;
                 case emit::CheckStatus::Refuted: ++refuted; break;
+                case emit::CheckStatus::Unknown: ++unknown; break;
                 case emit::CheckStatus::TimedOut: ++timedOutChecks; break;
-                case emit::CheckStatus::Error: ++errors; break;
+                case emit::CheckStatus::Error:
+                    ++errors;
+                    std::cerr << "smart: EBMC final check failed: " << result.detail << "\n";
+                    break;
             }
         }
         // Record HOW they were proved, not just how many. A bounded run
@@ -991,6 +957,7 @@ ExitCode checkEnvironment(const Options& options, const std::string& selfExecuta
         std::string name;
         std::string versionFlag;
         bool required;
+        std::string executable{};
     };
     const bool useVerilator = options.getString("simulator") == "verilator" ||
                               options.getString("simulator").empty();
@@ -998,13 +965,13 @@ ExitCode checkEnvironment(const Options& options, const std::string& selfExecuta
         {"verilator", "--version", useVerilator},
         {"iverilog", "-V", !useVerilator},
         {"vvp", "-V", !useVerilator},
-        {"ebmc", "--version", true},
-        {"cvc5", "--version", false},
+        {"ebmc", "--version", true, helper::ebmcExecutable()},
+        {"cvc5", "--version", options.getBool("sygus_subprocess"), cvc5Executable()},
     };
 
     bool ok = true;
     for (const auto& tool : tools) {
-        const auto path = which(tool.name);
+        const auto path = which(tool.executable.empty() ? tool.name : tool.executable);
         if (path.empty()) {
             std::cout << "[MISSING] " << tool.name
                       << (tool.required ? "" : " (optional)") << "\n";

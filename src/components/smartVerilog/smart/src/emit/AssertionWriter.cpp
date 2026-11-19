@@ -1,21 +1,15 @@
 #include "AssertionWriter.h"
 
 #include "../Version.h"
-#include "../helper/Shell.h"
 
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <regex>
 #include <sstream>
 #include <thread>
 
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace smart {
 namespace emit {
@@ -31,56 +25,10 @@ std::string readFile(const std::string& path) {
     return text.str();
 }
 
-// Run a shell command with a deadline. Returns the exit code, or -1 if it was
-// killed for running too long.
-int runWithTimeout(const std::string& command, int timeoutSeconds) {
-    const pid_t pid = fork();
-    if (pid < 0) return -2;
-
-    if (pid == 0) {
-        setpgid(0, 0);
-        execl("/bin/sh", "sh", "-c", command.c_str(), nullptr);
-        _exit(127);
-    }
-    setpgid(pid, pid);
-
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
-    int status = 0;
-    for (;;) {
-        const pid_t waited = waitpid(pid, &status, WNOHANG);
-        if (waited == pid) return WIFEXITED(status) ? WEXITSTATUS(status) : -2;
-        if (waited < 0) return -2;
-        if (std::chrono::steady_clock::now() >= deadline) {
-            kill(-pid, SIGKILL);
-            waitpid(pid, &status, 0);
-            return -1;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-}
-
 }  // namespace
 
-std::string ebmcCommand(const std::string& designFile,
-                        const CheckOptions& options) {
-    std::ostringstream command;
-    command << helper::shellQuote(options.ebmc) << " "
-            << helper::shellQuote(designFile);
-    // The spaces around -D FORMAL are load-bearing: without them the define
-    // and the next argument run together (fixed once in VerilogChecker.cpp).
-    command << " -D FORMAL";
-    for (const auto& file : options.extraFiles)
-        command << " " << helper::shellQuote(file);
-
-    if (options.unbounded)
-        command << " --k-induction";
-    else
-        command << " --bound " << options.bound;
-
-    if (!options.topModule.empty())
-        command << " --top " << helper::shellQuote(options.topModule);
-    return command.str();
+std::string ebmcCommand(const std::string& designFile, const CheckOptions& options) {
+    return helper::ebmcCommand(designFile, options);
 }
 
 std::string fileDeclaringModule(const std::vector<std::string>& files,
@@ -96,7 +44,8 @@ std::string fileDeclaringModule(const std::vector<std::string>& files,
 }
 
 std::string injectAssertions(const std::string& source, const std::string& top,
-                             const std::vector<std::string>& assertions) {
+                             const std::vector<std::string>& assertions,
+                             const std::string& label) {
     if (assertions.empty()) return source;
 
     // Find `module <top>` and then the first `endmodule` after it. Textual on
@@ -114,8 +63,11 @@ std::string injectAssertions(const std::string& source, const std::string& top,
 
     std::ostringstream injected;
     injected << "\n";
-    for (const auto& assertion : assertions)
-        injected << "    assert property (" << assertion << ");\n";
+    for (const auto& assertion : assertions) {
+        injected << "    ";
+        if (!label.empty()) injected << label << ": ";
+        injected << "assert property (" << assertion << ");\n";
+    }
 
     return source.substr(0, endmodule) + injected.str() + source.substr(endmodule);
 }
@@ -128,6 +80,7 @@ std::vector<CheckResult> checkAssertions(const std::string& designFile,
 
     fs::create_directories(options.scratchDir);
     const auto source = readFile(designFile);
+    const auto label = helper::freshPropertyLabel(source, options.extraFiles);
     const auto stem = fs::path(designFile).stem().string();
     const auto extension = fs::path(designFile).extension().string();
 
@@ -151,27 +104,18 @@ std::vector<CheckResult> checkAssertions(const std::string& designFile,
                                        std::to_string(index) + extension;
                 try {
                     std::ofstream out(candidate);
+                    out.exceptions(std::ios::failbit | std::ios::badbit);
                     out << injectAssertions(source,
-                                            options.injectModule.empty()
-                                                ? options.topModule
-                                                : options.injectModule,
-                                            {assertions[index]});
+                                  options.injectModule.empty() ? options.topModule : options.injectModule,
+                                  {assertions[index]}, label);
                     out.close();
 
-                    const auto command =
-                        ebmcCommand(candidate, options) + " > /dev/null 2>&1";
-                    const int status = runWithTimeout(command, options.timeoutSeconds);
-
-                    if (status == 0)
-                        result.status = CheckStatus::Verified;
-                    else if (status == -1)
-                        result.status = CheckStatus::TimedOut;
-                    else if (status > 0)
-                        result.status = CheckStatus::Refuted;
-                    else
-                        result.status = CheckStatus::Error;
-                } catch (const std::exception&) {
+                    const auto checked = helper::checkProperty(candidate, options, label);
+                    result.status = checked.status;
+                    result.detail = checked.detail;
+                } catch (const std::exception& e) {
                     result.status = CheckStatus::Error;
+                    result.detail = e.what();
                 }
 
                 result.seconds = std::chrono::duration<double>(

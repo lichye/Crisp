@@ -4,6 +4,7 @@
 #include "Timer.h"
 #include "Utils.h"
 #include "Shell.h"
+#include "../emit/AssertionWriter.h"
 #include <unistd.h>
 
 #include <string>
@@ -64,9 +65,9 @@ VerilogChecker::VerilogChecker(std::string verilogSrcPath,std::string homePath,B
                 }
             }
         }
-    } catch (const fs::filesystem_error& e) {
-        ;
+    } catch (const fs::filesystem_error&) {
     }
+    std::sort(relatedFilePaths.begin(), relatedFilePaths.end());
 }
 
 VerilogChecker::~VerilogChecker() {
@@ -84,104 +85,35 @@ void VerilogChecker::setTracePath(std::string path) {
     tracePath = path;
 }
 
-void VerilogChecker::writeVerilogFile() {
-    std::ifstream inputFile(verilogSrcPath);
-    if(!inputFile.is_open()) {
-        printError("Error: Unable to open input file "+verilogSrcPath+"\n");
-        exit(1);
-    }
-    std::vector<std::string> lines;
-    std::string line;
-    std::string currentModuleName = "";
-    bool isModule = false;
-    bool insertProperties = false;
-    bool insideBlockComment = false;
+void VerilogChecker::setDesignFiles(const std::vector<std::string>& files)
+{
+    if(files.empty())
+        return;
+    const auto target = std::find(files.begin(), files.end(), verilogSrcPath);
+    if(target == files.end())
+        throw std::runtime_error("EBMC input list is missing " + verilogSrcPath);
 
-    while (std::getline(inputFile, line)) {
-        lines.push_back(line);
+    designFileIndex = static_cast<std::size_t>(target - files.begin());
+    relatedFilePaths = files;
+    relatedFilePaths.erase(relatedFilePaths.begin() + designFileIndex);
+}
 
-        std::string trimmed = trim(line);
+void VerilogChecker::writeVerilogFile()
+{
+    std::ifstream input(verilogSrcPath);
+    if(!input)
+        throw std::runtime_error("cannot read " + verilogSrcPath);
+    std::ostringstream text;
+    text << input.rdbuf();
+    const auto source = text.str();
+    if(propertyLabel.empty())
+        propertyLabel = smart::helper::freshPropertyLabel(source, relatedFilePaths);
 
-        if (trimmed.find("/*") != std::string::npos) {
-            insideBlockComment = true;
-        }
-        if (insideBlockComment) {
-            if (trimmed.find("*/") != std::string::npos) {
-                insideBlockComment = false;
-            }
-            continue;
-        }
-
-        size_t commentPos = line.find("//");
-        size_t modulePos = line.find("module");
-        if ((commentPos != std::string::npos && (modulePos == std::string::npos || modulePos > commentPos))) {
-            continue;
-        }
-
-        if (line.find("endmodule") != std::string::npos && isModule) {
-            assert(properties.size() == propertyTypes.size());
-            for (std::size_t i = 0; i < properties.size(); i++) {
-                lines.insert(lines.end() - 1, "    assert property (" + properties[i] + ");\n");
-                insertProperties = true;
-            }
-            isModule = false;
-        }
-
-        if (line.find("module") != std::string::npos) {
-            std::size_t start = line.find("module") + 6;
-
-            // Skip whitespace
-            while (start < line.size() &&
-                   std::isspace(static_cast<unsigned char>(line[start]))) {
-                ++start;
-            }
-
-            // Find the end of the module name (before space, '#' or '(' )
-            std::size_t end = start;
-            while (end < line.size() &&
-                   !std::isspace(static_cast<unsigned char>(line[end])) &&
-                   line[end] != '#' && line[end] != '(') {
-                ++end;
-            }
-
-            currentModuleName = line.substr(start, end - start);
-            currentModuleName = trim(currentModuleName);
-
-            printDebug("Current module name: " + currentModuleName, 4);
-            // print("Current module name: " + currentModuleName + "\n");
-        }
-
-
-        const std::string target = injectModule.empty() ? topModule : injectModule;
-        if (currentModuleName == target) {
-            printDebug("Current module is the injection target", 4);
-            isModule = true;
-        } else {
-            printDebug("Current module name: " + currentModuleName, 4);
-            printDebug("Injection target: " + target, 4);
-            isModule = false;
-        }
-    }
-    inputFile.close();
-
-   
-    std::ofstream outputFile(formalFilePath);
-    if(!outputFile.is_open()) {
-        printError("Error: Unable to open output file "+formalFilePath+"\n");
-        exit(1);
-    }
-    for(auto &line : lines) {
-        outputFile << line << std::endl;
-    }
-    outputFile.close();
-    printDebug("Modified Verilog file is stored in " + formalFilePath,3);
-
-    if(!insertProperties) {
-        printError("Error: Unable to insert properties in the module "+
-                   (injectModule.empty() ? topModule : injectModule)+"\n");
-        exit(1);
-    }
-    // print("Successfully wrote formal file "+formalFilePath+"\n");
+    std::ofstream output(formalFilePath);
+    output.exceptions(std::ios::failbit | std::ios::badbit);
+    output << smart::emit::injectAssertions(source, injectModule.empty() ? topModule : injectModule,
+                                           properties, propertyLabel);
+    output.close();
 }
 
 void VerilogChecker::addProperty(State* state,PropertyType type) {
@@ -218,54 +150,23 @@ void VerilogChecker::cleanProperties() {
     propertyTypes.clear();
 }
 
-bool VerilogChecker::runEBMC(){
-    std::string command = "";
-    command += smart::helper::shellQuote("ebmc")+" "+smart::helper::shellQuote(formalFilePath);
-    command += " -D FORMAL ";
-    // command += " --bound "+std::to_string(bound);
+smart::helper::EbmcStatus VerilogChecker::runEBMC(const std::string& trace,
+                                                  const std::string& scope)
+{
+    smart::helper::EbmcOptions options;
+    options.topModule = topModule;
+    options.extraFiles = relatedFilePaths;
+    options.designFileIndex = designFileIndex;
+    options.bound = bound;
+    options.unbounded = unboundCheck;
 
-    for(auto &path : relatedFilePaths) {
-        command +=" "+smart::helper::shellQuote(path)+ " ";
-    }
-    
-    if(unboundCheck)
-        command += " --k-induction";
-    else
-        command += " --bound "+std::to_string(bound);
-
-    if(topModule != "")
-        command += " --top "+smart::helper::shellQuote(topModule);
-    // command += " --vcd test.vcd";
-    command += " > /dev/null 2>&1";
-    printDebug("Running EBMC with command: "+command+"\n",1);
     timer->start(timerType::FM_Timer);
-    int status = system(command.c_str());
+    const auto result = smart::helper::checkProperty(formalFilePath, options, propertyLabel,
+                                                    trace, scope);
     timer->stop(timerType::FM_Timer);
-    return status==0;
-}
-
-bool VerilogChecker::runEBMC(std::string tracePath){
-    std::string command = "";
-    command += smart::helper::shellQuote("ebmc")+" "+smart::helper::shellQuote(formalFilePath);
-    command += " -D FORMAL ";
-    // command += " --bound "+std::to_string(bound);
-
-    for(auto &path : relatedFilePaths) {
-        command +=" "+smart::helper::shellQuote(path)+ " ";
-    }
-
-    if(unboundCheck)
-        command += " --k-induction";
-    else
-        command += " --bound "+std::to_string(bound);
-
-    if(topModule != "")
-        command += " --top "+smart::helper::shellQuote(topModule);
-    command += " --vcd "+smart::helper::shellQuote(tracePath);
-    command += " > /dev/null 2>&1";
-    printDebug("Running EBMC with command: "+command+"\n",1);
-    int status = system(command.c_str());
-    return status==0;
+    if(result.status == smart::helper::EbmcStatus::Error)
+        throw std::runtime_error("EBMC failed for " + formalFilePath + ": " + result.detail);
+    return result.status;
 }
 
 //The check function will return true if the state is reachable
@@ -296,7 +197,8 @@ bool VerilogChecker::checkStateReachability(State* state) {
             unboundCheck = false;
             bound = reachabilityBound;
         }
-        result = runEBMC();
+        // Only a proof of !state supplies a negative example.
+        result = runEBMC() == smart::helper::EbmcStatus::Verified;
         unboundCheck = savedUnboundCheck;
         bound = savedBound;
     }
@@ -309,34 +211,28 @@ bool VerilogChecker::checkStateReachability(State* state) {
 }
 
 //The check function will return true if the property is verified/ the state is safe
-bool VerilogChecker::checkExprSafety(SygusFunction* func,std::string tracePath) {
+smart::helper::EbmcStatus VerilogChecker::checkExprSafety(SygusFunction* func,
+                                                           const std::string& tracePath,
+                                                           const std::string& scope)
+{
+    using smart::helper::EbmcStatus;
     cleanProperties();
     generateFormalFilePath(PropertyType::SAFT_PROPERTY);
-    addProperty(func,PropertyType::SAFT_PROPERTY);
+    addProperty(func, PropertyType::SAFT_PROPERTY);
     writeVerilogFile();
 
-
-    bool result = false;
-    if(solver==BackEndSolver::EBMC) {
-        result = runEBMC(tracePath);
-    }
-    else if(solver==BackEndSolver::SBY) {
-        result = runSby();
-        if(!result){
-            //if the result is failure, we need to move vcd file to the right place
-            std::string vcdPath = homePath + "/runtime/formal/dis_task/engine_0/trace.vcd";
-            std::error_code error;
-            fs::copy_file(vcdPath, tracePath,
-                          fs::copy_options::overwrite_existing, error);
-            if(error) {
-                printError("Error: Unable to copy vcd file "+vcdPath+" to "+tracePath+"\n");
-                exit(1);
-            }
+    EbmcStatus result = EbmcStatus::Error;
+    if(solver == BackEndSolver::EBMC)
+        result = runEBMC(tracePath, scope);
+    else if(solver == BackEndSolver::SBY)
+    {
+        result = runSby() ? EbmcStatus::Verified : EbmcStatus::Refuted;
+        if(result == EbmcStatus::Refuted)
+        {
+            const auto vcdPath = homePath + "/runtime/formal/dis_task/engine_0/trace.vcd";
+            fs::copy_file(vcdPath, tracePath, fs::copy_options::overwrite_existing);
         }
     }
-    
-    //if the property is verified, then the state is safe
-    printDebug("The safety result is: "+std::to_string(result),1);
     if(deleteTempFile)
         deleteVerilogFile();
     return result;

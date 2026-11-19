@@ -2,6 +2,7 @@
 #include "engine.hpp"
 
 #include <util/process/ChildProcess.h>
+#include <util/process/CurrentExecutablePath.h>
 #include <util/process/ProcessGroup.h>
 
 #include <cstdio>
@@ -106,7 +107,11 @@ void check_options(const front::Task& task) {
         if (setting == front::ToolUse::on)
             std::cout << "  " << name << " is not connected; continuing with EBMC\n";
     };
-    tool("smart", task.smart.value);
+    if (task.smart.value == front::ToolUse::only)
+        throw std::runtime_error("smart only is not supported");
+    if (task.smart.source && task.smart.value == front::ToolUse::on &&
+        (!task.includes.empty() || !task.defines.empty()))
+        throw std::runtime_error("smart on does not support [design] include or define yet");
     tool("veval", task.veval.value);
 }
 
@@ -140,23 +145,27 @@ TaskEvents read_events(const std::string& events) {
     return result;
 }
 
-fs::path wave_path(const front::Task& task, const std::string& name) {
+fs::path task_output_dir(const front::Task& task) {
     auto dir = task.salt_file.stem().string();
     if (task.name) dir += "_" + task.name->value;
     if (dir == "." || dir == "..")
-        throw std::runtime_error("cannot use '" + dir + "' as a VCD directory name");
+        throw std::runtime_error("cannot use '" + dir + "' as an output directory name");
+    return fs::path("crisp-out") / dir;
+}
+
+fs::path wave_path(const front::Task& task, const std::string& name) {
     std::string file;
     for (char c : name) {
         if (c == '/') file += "%2F";
         else if (c == '%') file += "%25";
         else file += c;
     }
-    return fs::path("crisp-out") / dir / (file + ".vcd");
+    return task_output_dir(task) / (file + ".vcd");
 }
 
 // Rename publishes a complete trace and replaces an existing file atomically.
 // When TMPDIR is on another filesystem, finish a local copy before the rename.
-bool publish_wave(const fs::path& from, const fs::path& to, Clock::time_point deadline) {
+bool publish_file(const fs::path& from, const fs::path& to, Clock::time_point deadline) {
     fs::create_directories(to.parent_path());
     std::error_code error;
     fs::rename(from, to, error);
@@ -188,6 +197,66 @@ bool publish_wave(const fs::path& from, const fs::path& to, Clock::time_point de
     }
     return true;
 }
+fs::path smart_executable() {
+    if (const char* path = std::getenv("CRISP_SMART"))
+        return fs::absolute(path);
+
+    const auto bin = veval::util::currentExecutable().parent_path();
+    const auto sibling = bin / "smart";
+    if (fs::is_regular_file(sibling)) return sibling;
+    return bin.parent_path() / "src/components/smartVerilog/build/smart";
+}
+
+void mine(const front::Task& task, const fs::path& scratch, Clock::time_point deadline) {
+    const auto executable = smart_executable();
+    if (::access(executable.c_str(), X_OK) != 0)
+        throw std::runtime_error("SMART executable not found at " + executable.string() +
+                                 ". Run 'make smart' or set CRISP_SMART");
+
+    const auto temporary_output = scratch / "smart_assertion.sv";
+    std::vector<std::string> args{executable.string(), "--no-discover-siblings",
+                                  "--workdir", (scratch / "smart").string(),
+                                  "--output", temporary_output.string()};
+    if (task.top) args.insert(args.end(), {"--top", task.top->value});
+    if (task.clock) args.insert(args.end(), {"--clock", task.clock->value});
+    if (task.reset) args.insert(args.end(), {"--reset", task.reset->value.signal +
+        (task.reset->value.polarity == front::Polarity::low ? ":0" : ":1")});
+    if (task.thread.value) args.insert(args.end(), {"--jobs", std::to_string(task.thread.value)});
+    for (const auto& file : task.files) args.push_back(fs::absolute(file.value).string());
+
+    std::vector<char*> argv;
+    for (auto& arg : args) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+    std::cout.flush();
+    std::cerr.flush();
+
+    const auto pid = veval::util::forkProofContext();
+    if (pid < 0) throw os_error("start SMART");
+    if (pid == 0) {
+#ifndef __APPLE__
+        if (::setpgid(0, 0) < 0) ::_exit(126);
+#endif
+        try {
+            if (task.ram_mib) set_memory_limit(task.ram_mib->value);
+            ::execv(executable.c_str(), argv.data());
+            std::perror("exec SMART");
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "%s\n", e.what());
+        }
+        ::_exit(126);
+    }
+
+    const auto wait = veval::util::waitForProofContext(pid, deadline, std::chrono::milliseconds(5));
+    if (!wait.error.empty()) throw std::runtime_error(wait.error);
+    if (wait.timedOut) throw std::runtime_error("SMART exceeded the task timeout");
+    if (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0)
+        throw std::runtime_error("SMART mining failed");
+
+    const auto output = task_output_dir(task) / "smart_assertion.sv";
+    if (!publish_file(temporary_output, output, deadline))
+        throw std::runtime_error("SMART output exceeded the task timeout");
+    std::cout << "  SMART assertions  " << output.string() << '\n';
+}
 } // namespace
 
 void Reporter::send(std::size_t index, const char* status, const std::string& detail) const {
@@ -209,9 +278,11 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     const auto deadline = start + std::chrono::seconds(seconds);
     check_options(task);
     Scratch scratch;
-    Pipe pipe;
     std::string error, events;
     if (!veval::util::ensureWaitableChildren(error)) throw std::runtime_error(error);
+    if (task.smart.source && task.smart.value == front::ToolUse::on)
+        mine(task, scratch.path, deadline);
+    Pipe pipe;
     for (int& fd : pipe.fd)
         if (!veval::util::moveAboveStandardDescriptors(fd, error, "result pipe")) throw std::runtime_error(error);
     if (::fcntl(pipe.fd[0], F_SETFL, O_NONBLOCK) < 0) throw os_error("configure result pipe");
@@ -253,7 +324,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         auto& p = properties[i];
         if (p.status == "refuted") {
             auto dest = wave_path(task, p.name);
-            if (publish_wave(scratch.path / (std::to_string(i) + ".vcd"), dest, deadline))
+            if (publish_file(scratch.path / (std::to_string(i) + ".vcd"), dest, deadline))
                 p.detail = dest.string();
             else { p.status = "unknown"; p.detail = timeout; }
         }

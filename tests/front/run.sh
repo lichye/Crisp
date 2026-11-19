@@ -22,6 +22,9 @@ if [[ -r /proc/self/status ]]; then
     }' /proc/self/status)
 fi
 "$root/build/tests/test-front" ../cases "$capture/errors" "$cpus"
+# The parser suite above covers explicit SMART selection. The standalone CLI
+# checks below exercise EBMC without requiring the optional mining tools.
+sed -i 's/^smart on/smart off/' "$scratch/cases/"fifo*.salt
 cat > "$scratch/cases/rtl/fifo.sv" <<'SV'
 module fifo(input wire clk, input wire rst_n);
     p_front: assert property (@(posedge clk) 1'b1);

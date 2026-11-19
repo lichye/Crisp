@@ -107,6 +107,7 @@ BlockResult runOne(const BlockJob& job, const BlockRunnerOptions& options,
                                          options.injectModule.empty()
                                              ? options.topModule
                                              : options.injectModule};
+        args.insert(args.end(), options.designFiles.begin(), options.designFiles.end());
         std::vector<char*> argv;
         argv.reserve(args.size() + 1);
         for (auto& arg : args) argv.push_back(arg.data());

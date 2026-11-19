@@ -2,6 +2,8 @@
 
 #include <set>
 #include "Utils.h"
+#include "Shell.h"
+#include <cstdlib>
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
@@ -358,9 +360,17 @@ std::string SyGuSGenerater::runCVC5SygusInProcess(const std::string& sygusPath){
   }
 }
 
+std::string cvc5Executable(){
+  if(const auto* path = std::getenv("SMART_CVC5"))
+    return path;
+  return SMART_CVC5_PATH;
+}
+
 std::string SyGuSGenerater::runCVC5SygusSubprocess(const std::string& sygusPath){
   const int seconds = std::max(1, (sygusTimeoutMs + 999) / 1000);
-  std::string command = "timeout "+std::to_string(seconds)+" cvc5 --lang=sygus2 "+sygusPath;
+  std::string command = "timeout " + std::to_string(seconds) + " " +
+      smart::helper::shellQuote(cvc5Executable()) + " --lang=sygus2 " +
+      smart::helper::shellQuote(sygusPath);
   printDebug("Running CVC5 with command: " + command,1);
   std::string result;
   char buffer[128];
