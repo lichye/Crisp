@@ -12,10 +12,8 @@
 #include <verilog/verilog_ebmc_language.h>
 
 #include <fstream>
-#include <iostream>
 #include <limits>
 #include <map>
-#include <sstream>
 
 namespace crisp::check {
 namespace {
@@ -57,7 +55,7 @@ cmdlinet command_line(const front::Task& task) {
     for (const auto& arg : args) argv.push_back(arg.c_str());
     cmdlinet cmd;
     if (cmd.parse(argv.size(), argv.data(),
-                  "I:D:(systemverilog)(top):(reset):(bdd)(new-ic3)(bound):(k-induction)(aig)(undriven):(undriven-report)") ||
+                  "I:D:(systemverilog)(top):(reset):(bdd)(new-ic3)(bound):(k-induction)(aig)(undriven):") ||
         config.set(cmd))
         throw std::runtime_error("EBMC rejected the task options");
     // In this fork --aig takes precedence over --k-induction and dispatches
@@ -94,45 +92,7 @@ public:
     }
 };
 
-class CoutCapture {
-public:
-    explicit CoutCapture(std::ostream& target) : original(std::cout.rdbuf(target.rdbuf())) {}
-    ~CoutCapture() { std::cout.rdbuf(original); }
-
-    CoutCapture(const CoutCapture&) = delete;
-    CoutCapture& operator=(const CoutCapture&) = delete;
-
-private:
-    std::streambuf* original;
-};
-
-void report_undriven(const cmdlinet& cmd, ui_message_handlert& messages, Undriven policy, Reporter reporter) {
-    auto report_cmd = cmd;
-    report_cmd.set("undriven-report");
-    std::ostringstream output;
-    {
-        // EBMC exposes the analysis through its report-only frontend path.
-        CoutCapture capture(output);
-        Verilog(report_cmd, messages).transition_system();
-    }
-    std::istringstream records(output.str());
-    std::string errors, line;
-    constexpr std::string_view prefix = "UNDRIVEN\t";
-    while (std::getline(records, line)) {
-        if (line.compare(0, prefix.size(), prefix) != 0) continue;
-        const auto end = line.find('\t', prefix.size());
-        if (end == std::string::npos) throw std::runtime_error("malformed EBMC undriven report");
-        const auto detail = "undriven " + line.substr(prefix.size(), end - prefix.size()) +
-                            " at " + line.substr(end + 1);
-        if (policy == Undriven::error) {
-            if (!errors.empty()) errors += '\n';
-            errors += "crisp: error: " + detail;
-        } else {
-            reporter.send(0, "undriven", detail);
-        }
-    }
-    if (!errors.empty()) throw std::runtime_error(errors);
-}
+struct UndrivenError {};
 
 // The pinned IC3 engine returns a verdict without a witness. Reconstruct a
 // reachable counterexample for that exact assertion under the same deadline.
@@ -182,9 +142,13 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter) 
     format_hooks();
     ui_message_handlert messages(cmd, "Crisp");
     messages.set_verbosity(messaget::M_WARNING);
-    report_undriven(cmd, messages, task.undriven.value, reporter);
     Verilog language(cmd, messages);
-    auto system = language.transition_system();
+    auto system = language.transition_system([&](const auto& undriven) {
+        for (const auto& net : undriven)
+            reporter.send(0, "undriven", "undriven " + net.name + " at " +
+                          id2string(net.location.get_file()) + ':' + id2string(net.location.get_line()));
+        if (!undriven.empty() && task.undriven.value == Undriven::error) throw UndrivenError{};
+    });
     if (!system) throw std::runtime_error("EBMC produced no transition system");
     if (task.reset && !task.top) language.reset_in_default_top(task.reset->value, *system);
     auto properties = ebmc_propertiest::from_command_line(cmd, *system, messages);
@@ -253,9 +217,12 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter) 
 }
 } // namespace
 
-void run_engine(const front::Task& task, const std::filesystem::path& scratch, Reporter reporter) {
+bool run_engine(const front::Task& task, const std::filesystem::path& scratch, Reporter reporter) {
     try {
         solve(task, scratch, reporter);
+        return true;
+    } catch (const UndrivenError&) {
+        return false;
     } catch (const ebmc_errort& error) {
         const auto where = error.location().as_string();
         throw std::runtime_error((where.empty() ? "" : where + ": ") + error.what());

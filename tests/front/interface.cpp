@@ -123,13 +123,18 @@ void positive_cases(const fs::path& dir, std::uint64_t cpus) {
         require(pair.size() == 2 && pair[0].timeout_seconds.value == 5 &&
                 pair[1].timeout_seconds.value == 100, "9.6 scope priority");
     }
-    write(input, tasks + "[options]\nundriven const\ntask1: undriven error\n" + files);
-    pair = ready(input);
-    require(pair[0].undriven.value == Undriven::error && pair[1].undriven.value == Undriven::constant,
-            "task overrides the common undriven policy");
     const auto salt = fs::absolute(input).lexically_normal();
-    origin(pair[0].undriven, salt, 6);
-    origin(pair[1].undriven, salt, 5);
+    const auto check_undriven = [&](const std::string& settings, std::size_t task_line, std::size_t common_line) {
+        write(input, tasks + "[options]\n" + settings + files);
+        const auto pair = ready(input);
+        require(pair.size() == 2 && pair[0].undriven.value == Undriven::error &&
+                pair[1].undriven.value == Undriven::constant, "task overrides the common undriven policy");
+        origin(pair[0].undriven, salt, task_line);
+        origin(pair[1].undriven, salt, common_line);
+    };
+    check_undriven("undriven const\ntask1: undriven error\n", 6, 5);
+    check_undriven("task1: undriven error\nundriven const\n", 5, 6);
+    check_undriven("task1:\nundriven error\n--\nundriven const\n", 6, 8);
 
     write(input, files);
     const auto unnamed = ready(input);
@@ -173,7 +178,9 @@ const InvalidCase invalid[] = {
     {"16-empty-tasks", "[files]\nrtl/fifo.sv\n[tasks]\n", 3, "tasks"},
     {"17-preamble", "top fifo\n[files]\nrtl/fifo.sv\n", 1, "section"},
     {"18-undriven", "[options]\nundriven unknown\n", 2, "expected seq, const, error"},
-    {"19-undriven-duplicate", "[options]\nundriven seq\nundriven const\n", 3, "duplicate setting"}
+    {"19-undriven-duplicate", "[options]\nundriven seq\nundriven const\n", 3, "duplicate setting"},
+    {"20-undriven-missing", "[options]\nundriven\n", 2, "expected one value"},
+    {"21-undriven-extra", "[options]\nundriven seq const\n", 2, "expected one value"}
 };
 
 } // namespace

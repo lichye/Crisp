@@ -114,14 +114,27 @@ for task in hold sequence; do
     has 'undriven-value.sv:2' err
 done
 run 2 undriven-value reject
-has 'crisp: error: undriven undriven_value.en at ' err
-has 'undriven-value.sv:2' err
+has "crisp: error: undriven undriven_value.en at $root/tests/cases/undriven-value.sv:2" err
+has "crisp: error: undriven undriven_value.bus[3] at $root/tests/cases/undriven-value.sv:3" err
+[[ $(grep -c '^crisp: error: undriven ' err) == 2 ]]
+if grep -Fq 'crisp: warning:' err; then
+    cat out err >&2
+    echo 'undriven error emitted a warning' >&2
+    exit 1
+fi
 has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 if grep -Fq 'undriven_value.p_nonzero' out; then
     cat out err >&2
     echo 'undriven error started verification' >&2
     exit 1
 fi
+
+run 2 undriven-value hold reject
+has '2 tasks, 1 proved, 0 passed, 0 refuted, 0 unknown'
+has 'crisp: warning: [hold] undriven undriven_value.en at ' err
+has 'crisp: error: [reject] undriven undriven_value.en at ' err
+[[ $(grep -c '^crisp: warning: \[hold\] undriven ' err) == 2 ]]
+[[ $(grep -c '^crisp: error: \[reject\] undriven ' err) == 2 ]]
 
 run 0 undriven-temporal hold
 has 'undriven_temporal.p_stable  proved'

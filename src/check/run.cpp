@@ -79,8 +79,7 @@ void set_memory_limit(std::uint64_t mib) {
         const struct rlimit no_core{0, 0};
         if (::setrlimit(RLIMIT_CORE, &no_core) < 0) throw os_error("disable task core dumps");
         if (task.ram_mib) set_memory_limit(task.ram_mib->value);
-        run_engine(task, scratch, reporter);
-        status = 0;
+        if (run_engine(task, scratch, reporter)) status = 0;
     } catch (const std::bad_alloc&) {
         std::fputs("EBMC exhausted available memory\n", stderr);
     } catch (const std::exception& error) {
@@ -203,7 +202,7 @@ void Reporter::send(std::size_t index, const char* status, const std::string& de
     }
 }
 
-void run(const front::Task& task, Summary& summary) {
+void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     const auto start = Clock::now();
     const auto max_seconds = std::chrono::duration_cast<std::chrono::seconds>(Clock::time_point::max() - start);
     const auto seconds = std::min<std::uint64_t>(task.timeout_seconds.value, max_seconds.count());
@@ -229,15 +228,21 @@ void run(const front::Task& task, Summary& summary) {
                                                        [&] { pipe.drain(events); });
     pipe.drain(events);
     if (!wait.error.empty()) throw std::runtime_error(wait.error);
-    const bool failed = !wait.timedOut && (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0);
     auto reports = read_events(events);
-    for (const auto& warning : reports.undriven) std::cerr << "crisp: warning: " << warning << '\n';
+    const bool reject_undriven = task.undriven.value == front::Undriven::error;
+    const bool rejected = reject_undriven && !reports.undriven.empty();
+    const bool failed = rejected || (!wait.timedOut && (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0));
+    for (const auto& detail : reports.undriven) {
+        std::cerr << (reject_undriven ? "crisp: error: " : "crisp: warning: ");
+        if (multiple_tasks && task.name) std::cerr << '[' << task.name->value << "] ";
+        std::cerr << detail << '\n';
+    }
     auto& properties = reports.properties;
     const auto timeout = "timeout after " + std::to_string(seconds) + " s";
     bool diagnostics = failed;
     if (failed) {
         summary.error = true;
-        if (WIFSIGNALED(wait.status))
+        if (!wait.timedOut && WIFSIGNALED(wait.status))
             std::cerr << "crisp: EBMC terminated by signal " << WTERMSIG(wait.status) << '\n';
     }
     if (properties.empty() && !failed) {
@@ -274,7 +279,7 @@ void run(const front::Task& task, Summary& summary) {
     if (diagnostics) {
         std::ifstream log(scratch.path / "diagnostics.log");
         if (log.peek() != std::ifstream::traits_type::eof()) std::cerr << log.rdbuf();
-        else if (failed) std::cerr << "crisp: EBMC failed during verification\n";
+        else if (failed && !rejected) std::cerr << "crisp: EBMC failed during verification\n";
     }
 }
 } // namespace crisp::check
