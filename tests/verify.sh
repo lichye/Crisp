@@ -3,13 +3,13 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 scratch=$(mktemp -d /tmp/crisp-test.XXXXXXXX)
 trap 'rm -rf -- "$scratch"' EXIT
-suite="$root/components/smartVerilog/.deps/oss-cad-suite/bin"
+suite="$root/src/components/smartVerilog/.deps/oss-cad-suite/bin"
 if [[ ! -x $suite/yosys-config ]]; then suite="$HOME/.local/oss-cad-suite/bin"; fi
 export OSS_CAD_BIN=${OSS_CAD_BIN:-$suite}
 export PATH="$OSS_CAD_BIN:$PATH:$HOME/.local/spot/bin"
 export TMPDIR="$scratch" PYTHONDONTWRITEBYTECODE=1
 mkdir "$scratch/native" "$scratch/log"
-"$root/components/veval/build/crisp/crisp_verify_tests" "$root" "$scratch/native"
+"$root/src/components/veval/build/crisp/crisp_verify_tests" "$root" "$scratch/native"
 
 # The intact DUT must retain authored assumptions and distinguish a real
 # counterexample from an inconclusive induction step.

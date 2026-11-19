@@ -12,7 +12,7 @@ The release includes one self-contained example. Running `./crisp token.sv` prov
 
 ## Component workflows
 
-The optional `components.tar.gz` beside the binary supplies SMART, veval, SBY, the matching Yosys tools and their runtime dependencies. Crisp opens it in a temporary system directory when a component command runs. [Component provenance](components/PROVENANCE.md)
+The optional `components.tar.gz` beside the binary supplies SMART, veval, SBY, the matching Yosys tools and their runtime dependencies. Crisp opens it in a temporary system directory when a component command runs. [Component provenance](src/components/PROVENANCE.md)
 
 | Command | Result in the text log |
 | --- | --- |
