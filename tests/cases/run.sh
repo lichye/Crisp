@@ -42,9 +42,10 @@ has 'token_formal.p_no_conflict  proved'
 run 3 token induction
 has 'token_formal.p_no_conflict  unknown'
 has 'k-induction inconclusive at depth 5'
-run 3 token bounded
-has 'token_formal.p_no_conflict  unknown'
-has 'no counterexample through depth 10'
+run 0 token bounded
+has 'token_formal.p_no_conflict  passed'
+has 'bmc depth 10'
+has '1 task, 0 proved, 1 passed, 0 refuted, 0 unknown'
 
 wave=crisp-out/token_bug/token_formal.p_no_conflict.vcd
 mkdir -p "$(dirname "$wave")"
@@ -75,7 +76,11 @@ valid_vcd crisp-out/reset_without_reset/reset_counter.p_range.vcd
 run 3 token prove induction
 has 'token_formal.p_no_conflict  proved'
 has 'token_formal.p_no_conflict  unknown'
-has '2 tasks, 1 proved, 0 refuted, 1 unknown'
+has '2 tasks, 1 proved, 0 passed, 0 refuted, 1 unknown'
+run 0 token prove bounded
+has 'token_formal.p_no_conflict  proved'
+has 'token_formal.p_no_conflict  passed'
+has '2 tasks, 1 proved, 1 passed, 0 refuted, 0 unknown'
 
 run 3 empty
 has 'no assertions'
@@ -91,4 +96,14 @@ has 'multiply.p_commutes  unknown'
 has 'timeout after 1 s'
 run 2 param
 has 'param WIDTH is not supported' err
-echo 'EBMC cases passed (spec 3, section 4, all 11 cases).'
+run 0 bmc-passed bmc
+has 'bmc_passed.p_below_limit  passed'
+has 'bmc depth 10'
+has '1 task, 0 proved, 1 passed, 0 refuted, 0 unknown'
+run 3 bmc-passed kind
+has 'bmc_passed.p_below_limit  unknown'
+has 'k-induction inconclusive at depth 5'
+has '1 task, 0 proved, 0 passed, 0 refuted, 1 unknown'
+run 3 bmc-passed
+has '2 tasks, 0 proved, 1 passed, 0 refuted, 1 unknown'
+echo 'EBMC cases passed (Specs 3 and 11).'

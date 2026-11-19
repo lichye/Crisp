@@ -57,7 +57,7 @@ for file in fifo.salt fifo-crlf.salt; do
     grep -Fxq task1 "$capture/out"
     grep -Fxq task2 "$capture/out"
     [[ $(grep -c 'fifo.p_front  proved' "$capture/out") == 2 ]]
-    [[ $(tail -n 1 "$capture/out") == "2 tasks, 2 proved, 0 refuted, 0 unknown" ]]
+    [[ $(tail -n 1 "$capture/out") == "2 tasks, 2 proved, 0 passed, 0 refuted, 0 unknown" ]]
 done
 cli 0 ../cases/fifo.salt task2
 grep -Fxq task2 "$capture/out"

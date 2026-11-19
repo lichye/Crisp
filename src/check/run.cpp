@@ -252,6 +252,7 @@ void run(const front::Task& task, Summary& summary) {
             p.status = "unknown";
         }
         if (p.status == "proved") ++summary.proved;
+        else if (p.status == "passed") ++summary.passed;
         else if (p.status == "refuted") ++summary.refuted;
         else ++summary.unknown;
         const std::chrono::duration<double> elapsed = Clock::now() - start;

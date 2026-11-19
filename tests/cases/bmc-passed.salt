@@ -1,0 +1,19 @@
+[tasks]
+bmc
+kind
+
+[files]
+bmc-passed.sv
+
+[design]
+top bmc_passed
+
+[options]
+smart off
+veval off
+bmc:
+mode bmc
+depth 10
+kind:
+mode kind
+depth 5
