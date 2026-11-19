@@ -155,6 +155,46 @@ grep -Fq 'EBMC final check failed' final-error.log
 grep -Fq 'EBMC exited with status 6' final-error.log
 [[ ! -e final-error.sv ]]
 
+# Exercise the actual final check and validate every record it leaves behind.
+cat > sample/comb_xor.sv <<'SV'
+module comb_xor(input a, b, output y);
+  assign y = a ^ b;
+endmodule
+SV
+run 0 final-check.log "$smart" --no-discover-siblings sample/comb_xor.sv --simulator iverilog \
+    --cycles 2 --traces 1 --seed 1 --refine 5 --no-blockified -j 1 --keep-work \
+    --workdir final-check -o final-check.sv
+python3 -I - final-check/run-log.jsonl <<'PYTHON'
+import json
+import sys
+
+path = sys.argv[1]
+checks = []
+with open(path, encoding="utf-8") as log:
+    for number, line in enumerate(log, 1):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise SystemExit(f"{path}:{number}: {error}") from error
+        if not isinstance(record, dict) or not {"run", "t"} <= record.keys():
+            raise SystemExit(f"{path}:{number}: expected a run log record")
+        if record.get("stage") == "check":
+            checks.append(record)
+
+if len(checks) != 1:
+    raise SystemExit(f"{path}: expected one final check record, got {len(checks)}")
+check = checks[0]
+outcomes = ("verified", "refuted", "unknown", "timed_out", "errors")
+for field in ("checked", *outcomes):
+    value = check.get(field)
+    if type(value) is not int or value < 0:
+        raise SystemExit(f"{path}: expected a nonnegative integer for {field}, got {value!r}")
+if check["mode"] != "k-induction" or check["bound"] is not None:
+    raise SystemExit(f"{path}: expected an unbounded k-induction check")
+if check["verified"] == 0 or check["checked"] != sum(check[field] for field in outcomes):
+    raise SystemExit(f"{path}: inconsistent final check counts: {check}")
+PYTHON
+
 # Omitted top follows EBMC resolution, even when the first input is a
 # package and the file that declares the module has a different name.
 for name in one-file mining; do

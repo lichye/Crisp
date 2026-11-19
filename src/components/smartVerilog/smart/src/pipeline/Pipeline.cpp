@@ -885,13 +885,12 @@ ExitCode Pipeline::run(RunSummary& summary) {
                       (check.unbounded ? "k-induction" : "bounded") + "\",\"bound\":" +
                       (check.unbounded ? std::string("null")
                                        : std::to_string(check.bound)) +
-                      ",\"checked\":" +
-                      std::to_string(checked.size()) + ",\"verified\":" +
-                      std::to_string(verified.size()) + ",\"refuted\":" +
-                      std::to_string(refuted) + ",\"timed_out\":" +
+                      ",\"checked\":" + std::to_string(checked.size()) +
+                      ",\"verified\":" + std::to_string(verified.size()) +
+                      ",\"refuted\":" + std::to_string(refuted) +
+                      ",\"timed_out\":" + std::to_string(timedOutChecks) +
                       ",\"unknown\":" + std::to_string(unknown) +
-                      std::to_string(timedOutChecks) + ",\"errors\":" +
-                      std::to_string(errors));
+                      ",\"errors\":" + std::to_string(errors));
         if (errors != 0) {
             summary.workDirKept = true;
             return ExitCode::Failure;

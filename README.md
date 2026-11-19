@@ -38,8 +38,8 @@ uses EBMC's sole uninstantiated module. Set `top` explicitly if several
 modules qualify. Tasks that use `[design] include` or `define` can continue
 to run with `smart off`.
 
-Run `make test-smart` with both Verilator and Icarus on `PATH` to check the
-SMART integration.
+Run `make test-smart` with Verilator, Icarus, and Python 3 on `PATH` to check
+the SMART integration.
 
 ## Build from source
 
