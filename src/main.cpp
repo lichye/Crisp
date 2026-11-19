@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
     for (const auto& task : tasks) {
         print_task(task);
         try {
-            crisp::check::run(task, summary);
+            crisp::check::run(task, summary, tasks.size() > 1);
         } catch (const std::exception& error) {
             std::cerr << "crisp: " << error.what() << '\n';
             summary.error = true;

@@ -15,6 +15,6 @@ struct Summary {
     }
 };
 
-void run(const front::Task&, Summary&);
+void run(const front::Task&, Summary&, bool multiple_tasks);
 
 } // namespace crisp::check
