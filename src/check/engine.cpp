@@ -38,7 +38,7 @@ cmdlinet command_line(const front::Task& task) {
     switch (task.mode.value) {
     case Mode::automatic:
     case Mode::bdd: args.push_back("--bdd"); break;
-    case Mode::pdr: args.push_back("--ic3"); break;
+    case Mode::pdr: args.push_back("--new-ic3"); break;
     case Mode::kind:
     case Mode::bmc:
         if (task.depth->value > std::numeric_limits<unsigned>::max())
@@ -52,7 +52,7 @@ cmdlinet command_line(const front::Task& task) {
     std::vector<const char*> argv;
     for (const auto& arg : args) argv.push_back(arg.c_str());
     cmdlinet cmd;
-    if (cmd.parse(argv.size(), argv.data(), "I:D:(systemverilog)(top):(reset):(bdd)(ic3)(bound):(k-induction)(aig)") ||
+    if (cmd.parse(argv.size(), argv.data(), "I:D:(systemverilog)(top):(reset):(bdd)(new-ic3)(bound):(k-induction)(aig)") ||
         config.set(cmd))
         throw std::runtime_error("EBMC rejected the task options");
     // In this fork --aig takes precedence over --k-induction and dispatches
@@ -191,7 +191,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter) 
         check_batch(properties);
         return;
     }
-    // The pinned IC3 implementation checks only one output per invocation.
+    // Publish each PDR verdict before checking the next property in case the task times out.
     ebmc_propertiest assumptions;
     for (const auto& p : properties.properties)
         if (p.is_assumption()) assumptions.properties.push_back(p);
