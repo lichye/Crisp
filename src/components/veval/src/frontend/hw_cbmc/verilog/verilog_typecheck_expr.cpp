@@ -2475,17 +2475,6 @@ exprt verilog_typecheck_exprt::elaborate_constant_system_function_call(
   {
     DATA_INVARIANT(arguments.size() == 1, "$isunknown takes one argument");
 
-    // Only fold when the argument really is a constant expression. Handing a
-    // variable to elaborate_constant_expression reaches var_value, whose
-    // precondition is `false' in this typechecker, and that aborts the
-    // process rather than reporting anything -- so `$isunknown(some_signal)'
-    // took the whole run down. Giving up here is what the two branches below
-    // already do for every other non-constant case. See PROVENANCE.md,
-    // patch 0024.
-    mp_integer ignored;
-    if(!is_constant_expression(arguments[0], ignored))
-      return std::move(expr); // give up
-
     auto op = elaborate_constant_expression(arguments[0]);
 
     if(!op.is_constant())

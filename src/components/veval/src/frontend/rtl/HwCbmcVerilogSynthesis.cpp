@@ -13,6 +13,7 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include "HwCbmcVerilogSynthesis.h"
 #include "HwCbmcVerilogSynthesisClass.h"
+#include "frontend/sva/PropertyMonitor.h"
 
 static transt verilog_synthesis_indexed(
   symbol_table_baset &,
@@ -49,6 +50,22 @@ static transt verilog_synthesis_indexed(
 #include <functional>
 #include <map>
 #include <set>
+
+namespace {
+
+class elaborated_verilog_expressiont final : public verilog_typecheck_exprt
+{
+public:
+  using verilog_typecheck_exprt::verilog_typecheck_exprt;
+
+protected:
+  void elaborate_symbol_rec(irep_idt) override
+  {
+    // Synthesis only folds expressions whose symbols are already elaborated.
+  }
+};
+
+} // namespace
 
 // Preserve sharing in a pure expression as lexical let bindings. These are
 // combinational expressions, not design wires or additional temporal state.
@@ -218,12 +235,17 @@ exprt verilog_synthesist::simplify_sva_expression(const exprt &original)
 
 exprt verilog_synthesist::synth_expr(exprt expr, symbol_statet symbol_state)
 {
+  const auto xz_operator = veval::sva::xzConstruct(expr);
   // First lower any Verilog-specific expressions
-  auto lowered = verilog_lowering(expr);
+  auto lowered = verilog_lowering(std::move(expr));
 
   // Now replace symbols by known values, and expand
   // function definitions.
-  return synth_expr_rec(lowered, symbol_state);
+  auto synthesized = synth_expr_rec(std::move(lowered), symbol_state);
+  // Function and property expansion can replace the whole expression.
+  if(!xz_operator.empty())
+    synthesized.set(veval::sva::sourceXzOperator, irep_idt{xz_operator});
+  return synthesized;
 }
 
 /*******************************************************************\
@@ -279,11 +301,8 @@ exprt verilog_synthesist::synth_expr_rec(exprt expr, symbol_statet symbol_state)
       // substitute
       assert(symbol.value.is_not_nil());
 
-      // These aren't lowered yet
-      auto lowered = verilog_lowering(symbol.value);
-
-      // recursive call
-      return synth_expr_rec(lowered, symbol_state);
+      // These aren't lowered yet.
+      return synth_expr(symbol.value, symbol_state);
     }
     else
     {
@@ -683,7 +702,7 @@ exprt verilog_synthesist::expand_function_call(const function_call_exprt &call,
     else
     {
       // Attempt to constant fold.
-      verilog_typecheck_exprt verilog_typecheck_expr(
+      elaborated_verilog_expressiont verilog_typecheck_expr(
         standard, false, ns, get_message_handler());
       auto result =
         verilog_typecheck_expr.elaborate_constant_system_function_call(call);
@@ -929,11 +948,8 @@ exprt verilog_synthesist::expand_hierarchical_identifier(
   {
     DATA_INVARIANT(symbol->value.is_not_nil(), "macro must have value");
 
-    // These aren't lowered yet
-    auto lowered = verilog_lowering(symbol->value);
-
-    // recursive call
-    return synth_expr_rec(std::move(lowered), symbol_state);
+    // These aren't lowered yet.
+    return synth_expr(symbol->value, symbol_state);
   }
 
   symbol_exprt new_symbol{full_identifier, expr.type()};

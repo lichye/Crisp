@@ -136,13 +136,7 @@ protected:
 
   virtual void elaborate_symbol_rec(irep_idt)
   {
-    // Nothing to do. This base class is used on its own in contexts that run
-    // after elaboration -- constant-folding a system function call during
-    // synthesis, for one -- where every symbol is already elaborated and
-    // there is nothing left to recurse into. Aborting on a precondition
-    // there turns a legal design into an invariant violation with a
-    // backtrace. The derived typechecker overrides this for the contexts
-    // where elaboration genuinely still has work to do.
+    PRECONDITION(false);
   }
 
   // to be overridden

@@ -217,13 +217,7 @@ public:
 
   exprt lower() const
   {
-    // `a === b' and `a == b' lower to the same expression, so a consumer
-    // downstream cannot tell that the author was distinguishing X and Z.
-    // Leave a mark saying what this was. See PROVENANCE.md, patch 0024:
-    // without it a monitor built from `===' silently checks `=='.
-    auto lowered = equal_exprt{lhs(), rhs()};
-    lowered.set(ID_C_verilog_xz_sensitive, "===");
-    return std::move(lowered);
+    return equal_exprt{lhs(), rhs()};
   }
 };
 
@@ -257,9 +251,7 @@ public:
 
   exprt lower() const
   {
-    auto lowered = notequal_exprt{lhs(), rhs()};
-    lowered.set(ID_C_verilog_xz_sensitive, "!==");
-    return std::move(lowered);
+    return notequal_exprt{lhs(), rhs()};
   }
 };
 

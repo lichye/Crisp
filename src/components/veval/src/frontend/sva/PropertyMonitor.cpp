@@ -106,26 +106,6 @@ std::vector<symbol_exprt> Monitor::atomSymbols() const {
     return result;
 }
 
-// Reject four-state-sensitive operations before building a two-state monitor.
-// The frontend preserves their original operator in a marker after normalization.
-std::string xzConstruct(const exprt& expr) {
-    // Normalization can erase the original operator ID; check the marker first.
-    auto marked = expr.get(ID_C_verilog_xz_sensitive);
-    if (!marked.empty()) return id2string(marked);
-
-    // Also recognize expressions that have not been normalized yet.
-    if (expr.id() == ID_verilog_case_equality) return "===";
-    if (expr.id() == ID_verilog_case_inequality) return "!==";
-    if (expr.id() == ID_verilog_wildcard_equality) return "==?";
-    if (expr.id() == ID_verilog_wildcard_inequality) return "!=?";
-
-    for (const auto& op : expr.operands()) {
-        auto found = xzConstruct(op);
-        if (!found.empty()) return found;
-    }
-    return {};
-}
-
 namespace {
 
 // Collect guard symbols before normalization removes the disable-iff nodes.
