@@ -19,7 +19,6 @@
 #include <util/std_expr.h>
 #include <util/symbol.h>
 #include <util/json_irep.h>
-#include <verilog/expr2verilog.h>
 #include <verilog/verilog_expr.h>
 #include <util/mathematical_types.h>
 
@@ -466,7 +465,7 @@ std::optional<std::string> propertyText(const exprt& expr,
     }
     if (expr.id() == "#veval_sva_locals") return propertyText(expr.operands()[0],ns);
     if (printsDirectly(expr))
-        return ns ? expr2verilog(frontend::prepareTypedPrint(expr), *ns) : std::string("<boolean>");
+        return ns ? veval::frontend::productExpression(frontend::prepareTypedPrint(expr), *ns) : std::string("<boolean>");
 
     auto sub = [&](const exprt& op) { return propertyText(op, ns); };
 
@@ -508,7 +507,7 @@ std::optional<std::string> propertyText(const exprt& expr,
         auto rhs = sub(binary.rhs());
         if (!rhs) return std::nullopt;
         return "disable iff (" +
-               (ns ? expr2verilog(frontend::prepareTypedPrint(binary.lhs()), *ns) : std::string("<boolean>")) +
+               (ns ? veval::frontend::productExpression(frontend::prepareTypedPrint(binary.lhs()), *ns) : std::string("<boolean>")) +
                ") (" + *rhs + ")";
     }
     if (id == ID_sva_s_eventually) {
@@ -520,8 +519,8 @@ std::optional<std::string> propertyText(const exprt& expr,
         auto piece = sub(expr.operands()[2]);
         if (!piece) return std::nullopt;
         if (ns == nullptr) return std::string("<ranged>");
-        return "always [" + expr2verilog(expr.operands()[0], *ns) + ":" +
-               expr2verilog(expr.operands()[1], *ns) + "] (" + *piece + ")";
+        return "always [" + veval::frontend::productExpression(expr.operands()[0], *ns) + ":" +
+               veval::frontend::productExpression(expr.operands()[1], *ns) + "] (" + *piece + ")";
     }
     if (id == ID_sva_overlapped_implication ||
         id == ID_sva_non_overlapped_implication) {
@@ -531,7 +530,7 @@ std::optional<std::string> propertyText(const exprt& expr,
         if (!rhs) return std::nullopt;
         std::string arrow =
             id == ID_sva_overlapped_implication ? " |-> " : " |=> ";
-        return (ns ? expr2verilog(frontend::prepareTypedPrint(binary.lhs()), *ns) : std::string("<seq>")) +
+        return (ns ? veval::frontend::productExpression(frontend::prepareTypedPrint(binary.lhs()), *ns) : std::string("<seq>")) +
                arrow + "(" + *rhs + ")";
     }
 
@@ -696,7 +695,7 @@ std::string localDeclarationsText(const exprt& expression, const namespacet& ns)
         text += "bit " + std::string(type.id() == ID_signedbv ? "signed " : "") +
             "[" + std::to_string(width - 1) + ":0] " + name;
         if (d.operands()[1].is_not_nil())
-            text += " = " + expr2verilog(frontend::prepareTypedPrint(
+            text += " = " + veval::frontend::productExpression(frontend::prepareTypedPrint(
                 frontend::prepareFunctionPrint(d.operands()[1], ns).expression), ns);
         text += "; ";
     }
@@ -853,7 +852,7 @@ std::vector<DesignContract> designContracts(const InstanceEdge& edge,
         const auto value = sameWidth ? binding.value
             : simplify_expr(typecast_exprt::conditional_cast(binding.value, subject.type()), ns);
         contracts.push_back(
-            {bareName(binding.port), binding.localName(), expr2verilog(frontend::prepareTypedPrint(value), ns),
+            {bareName(binding.port), binding.localName(), veval::frontend::productExpression(frontend::prepareTypedPrint(value), ns),
              binding.relation()});
     }
     return contracts;

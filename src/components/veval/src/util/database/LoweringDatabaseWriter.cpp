@@ -36,9 +36,8 @@ void writeDatabase(const fs::path &log, const lowering::DesignGraph &graph,
         // to WAL and copying it back during commit; retain transaction rollback.
         db.exec("PRAGMA journal_mode=DELETE");
         db.exec("PRAGMA cache_size=-65536");
-        // SQLite caps helper threads at its own build limit; include the
-        // writer itself in the caller's -j budget.
-        db.exec("PRAGMA threads=" + std::to_string(workers > 1 ? workers - 1 : 0));
+        // Zero auxiliary threads leaves SQLite's writer as the sole thread.
+        db.exec("PRAGMA threads=0");
         db.begin();
         try {
             const auto indexes = db.deferIndexes();

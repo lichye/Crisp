@@ -10,7 +10,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 set(VEVAL_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-add_subdirectory(src/frontend/hw_cbmc)
+include(cmake/HwCbmc.cmake)
 target_link_libraries(hw_cbmc_frontend PUBLIC Threads::Threads)
 
 # --- one library per role ---------------------------------------------------
@@ -20,6 +20,17 @@ add_library(veval_frontend STATIC
     ${VEVAL_SRC}/frontend/input/ReplaceDontCareConstants.cpp)
 target_link_libraries(veval_frontend PUBLIC hw_cbmc_frontend)
 target_include_directories(veval_frontend PUBLIC ${VEVAL_SRC})
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(veval_nested_array_writes_test test/NestedArrayWrites.cpp)
+    target_link_libraries(veval_nested_array_writes_test PRIVATE veval_frontend)
+    foreach(top IN ITEMS dynamic_word_bit dynamic_row_column fixed_column
+                         combinational_bit out_of_bounds_bit)
+        add_test(NAME veval.array_write.${top} COMMAND veval_nested_array_writes_test
+            "${top}" "${CMAKE_CURRENT_SOURCE_DIR}/test/nested_array_writes.sv")
+    endforeach()
+endif()
 
 add_library(veval_sva STATIC ${VEVAL_SRC}/frontend/sva/PropertyMonitor.cpp
     ${VEVAL_SRC}/frontend/sva/LocalVariableMonitor.cpp

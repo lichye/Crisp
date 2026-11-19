@@ -5,6 +5,7 @@
 #include "lowering/LoweringStore.h"
 #include "util/files/AtomicOutput.h"
 #include "util/process/ChildProcess.h"
+#include "util/process/ParallelFor.h"
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -31,6 +32,8 @@ int main(int argc, char** argv) {
         auto invocation = parseArgs(argc, argv);
         applyConfig(invocation);
         validateInvocation(invocation);
+        if (invocation.generationThreads)
+            invocation.generationThreads = veval::util::effectiveGenerationThreads(*invocation.generationThreads);
         applyRuntimePolicy(invocation);
 
         if (invocation.command == "freex") return runUndrivenSignals(invocation);

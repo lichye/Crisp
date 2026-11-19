@@ -22,12 +22,6 @@ Author: Daniel Kroening, kroening@kroening.com
 
 class transt;
 
-// Synthesize independent, already typed modules in dependency order.
-// Returns false for interface designs that require a shared writable scope.
-bool verilog_synthesis_parallel(
-  symbol_tablet &, const irep_idt &, verilog_standardt,
-  bool ignore_initial, bool initial_zero, message_handlert &, std::size_t threads);
-
 transt verilog_synthesis(
   symbol_table_baset &,
   const irep_idt &module_identifier,

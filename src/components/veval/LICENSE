@@ -28,8 +28,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 --------------------------------------------------------------------------------
 
-Imported third-party code retains its own copyright notices and terms:
-src/frontend/hw_cbmc/LICENSE (hw-cbmc, BSD-3-Clause),
-src/util/cbmc/LICENSE (CBMC, BSD-4-Clause), and the licence files under
-test/support/ and third_party/sby/. Import provenance is recorded in
-src/frontend/hw_cbmc/README.md and PATCH-HISTORY.md.
+The imported evaluator retains its original notices and BSD-3-Clause terms
+in src/frontend/rtl/LICENSE.hw-cbmc. The shared hw-cbmc frontend and CBMC
+library carry their respective licences in ../hw-cbmc/LICENSE and
+../hw-cbmc/lib/cbmc/LICENSE. Evaluator provenance is recorded in
+src/frontend/rtl/HwCbmcProvenance.md.

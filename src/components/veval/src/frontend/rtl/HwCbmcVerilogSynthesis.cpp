@@ -39,7 +39,7 @@ static transt verilog_synthesis_indexed(
 #include <ebmc/ebmc_error.h>
 
 #include <verilog/aval_bval_encoding.h>
-#include <verilog/expr2verilog.h>
+#include "util/verilog/ExpressionPrinter.h"
 #include <verilog/sva_expr.h>
 #include <verilog/verilog_expr.h>
 #include <verilog/verilog_initializer.h>
@@ -260,8 +260,91 @@ Function: verilog_synthesist::synth_expr_rec
 
 \*******************************************************************/
 
+// The shared frontend gives each assertion attempt its own local identifiers.
+// Keep the declarations and their typed initializers with the monitor body.
+exprt verilog_synthesist::synth_sva_instance(
+  const sva_sequence_property_instance_exprt &instance,
+  symbol_statet symbol_state)
+{
+  const auto &declaration = instance.declaration();
+  auto body = declaration.cond();
+  if(declaration.local_declarations().empty())
+    return synth_expr(std::move(body), symbol_state);
+
+  const auto prefix = id2string(instance.symbol().get_identifier()) + '.';
+  std::map<irep_idt, exprt> locals, initializers;
+  bool has_initializer = false;
+  for(const auto &decl : declaration.local_declarations())
+    for(const auto &d : decl.declarators())
+      has_initializer |= d.has_value();
+
+  const bool sequence = instance.symbol().type().id() == ID_verilog_sva_named_sequence;
+  if(sequence || has_initializer)
+  {
+    // A sequence carries its declaration items on the sequence itself.
+    // A property samples them on the antecedent of an overlapped implication.
+    const auto &outer = to_binary_expr(body);
+    const auto &items = sequence ? outer : to_binary_expr(outer.lhs());
+    CHECK_RETURN(items.id() == ID_sva_sequence_match_items);
+    for(const auto &item : items.rhs().operands())
+    {
+      const auto &assignment = to_binary_expr(item);
+      const auto name = assignment.lhs().get(ID_base_name);
+      locals.emplace(name, assignment.lhs());
+      initializers.emplace(name, assignment.rhs());
+    }
+    body = exprt{sequence ? outer.lhs() : outer.rhs()};
+  }
+
+  body.visit_pre([&](const exprt &node) {
+    if(node.id() == ID_sva_local)
+    {
+      const auto name = node.get(ID_base_name);
+      const auto scope = prefix + id2string(name) + "::";
+      if(node.get_string(ID_identifier).compare(0, scope.size(), scope) == 0)
+        locals.emplace(name, node);
+    }
+  });
+
+  exprt declarations{"#veval_sva_declarations"};
+  for(const auto &decl : declaration.local_declarations())
+    for(const auto &d : decl.declarators())
+    {
+      const auto name = d.base_name();
+      const auto scoped = prefix + id2string(name);
+      auto it = locals.find(name);
+      if(it == locals.end())
+      {
+        exprt unused{ID_sva_local, ns.lookup(scoped).type};
+        unused.set(ID_identifier, scoped + "::unused" + std::to_string(unused_sva_local++));
+        unused.set(ID_base_name, name);
+        it = locals.emplace(name, std::move(unused)).first;
+      }
+      const auto init = initializers.find(name);
+      declarations.add_to_operands(exprt{
+        "#veval_sva_declaration", typet{},
+        {it->second, init == initializers.end() ? nil_exprt{} : init->second}});
+    }
+  const auto type = body.type();
+  return synth_expr(exprt{"#veval_sva_locals", type, {std::move(body), std::move(declarations)}},
+                    symbol_state);
+}
+
 exprt verilog_synthesist::synth_expr_rec(exprt expr, symbol_statet symbol_state)
 {
+  if(expr.id() == ID_sva_local)
+  {
+    symbol_exprt local{expr.get(ID_identifier), expr.type()};
+    local.set("#veval_sva_local", true);
+    local.set("#veval_sva_local_name", expr.get(ID_base_name));
+    return local;
+  }
+  if(expr.id() == ID_sva_sequence_match_items)
+  {
+    auto &items = to_binary_expr(expr).rhs();
+    for(auto &item : items.operands()) item.id("#veval_sva_assign");
+    expr.id("#veval_sva_match");
+  }
   if(expr.id() == ID_symbol && expr.get_bool("#veval_sva_local"))
     return expr;
   if(expr.id() == ID_function_call)
@@ -270,8 +353,7 @@ exprt verilog_synthesist::synth_expr_rec(exprt expr, symbol_statet symbol_state)
   }
   else if(expr.id() == ID_sva_sequence_property_instance)
   {
-    auto &instance = to_sva_sequence_property_instance_expr(expr);
-    return synth_expr(instance.declaration().cond(), symbol_state);
+    return synth_sva_instance(to_sva_sequence_property_instance_expr(expr), symbol_state);
   }
   else if(expr.id() == ID_hierarchical_identifier)
   {
@@ -469,8 +551,32 @@ exprt verilog_synthesist::synth_lhs_expr(exprt expr)
   }
   else if(expr.id() == ID_verilog_bit_select)
   {
-    // Lower to extractbit or index, then process the result.
-    return synth_lhs_expr(verilog_lowering(std::move(expr)));
+    // Lower each selector after its base has been synthesized as an lvalue.
+    // Read lowering of the entire tree would replace an inner mem[a] by
+    // if(in_range, mem[a], default), which is no longer an assignment target.
+    auto &select = to_verilog_bit_select_expr(expr);
+    select.src() = synth_lhs_expr(select.src());
+    select.index() = synth_expr(select.index(), symbol_statet::CURRENT);
+    auto lowered = verilog_lowering_node(expr);
+    if(select.src().type().id() == ID_array &&
+       to_verilog_array_type(select.src().type()).is_unpacked() &&
+       lowered.id() != ID_index)
+    {
+      if(lowered.id() == ID_if)
+      {
+        const auto &guarded = to_if_expr(lowered);
+        auto lhs = guarded.true_case();
+        lhs.set("#veval_write_in_range", guarded.cond());
+        return lhs;
+      }
+      // A statically out-of-range read has folded to the element default.
+      const auto &array = to_verilog_array_type(select.src().type());
+      auto lhs = index_exprt{
+        select.src(), from_integer(0, array.index_type()), array.element_type()};
+      lhs.set("#veval_write_in_range", false_exprt{});
+      return lhs;
+    }
+    return lowered;
   }
   else if(expr.id() == ID_member)
   {
@@ -576,9 +682,9 @@ void verilog_synthesist::validate_sva_function(const symbolt &function,
   if(function.type.id() != ID_code ||
      to_code_type(function.type).return_type() == empty_typet())
     refuse("tasks are not pure expressions");
-  if(!function.type.get_bool("#veval_automatic_function"))
+  if(function.type.get(ID_verilog_lifetime) != ID_automatic)
     refuse("requires automatic lifetime");
-  if(function.type.get_bool("#veval_static_local"))
+  if(function.type.get_bool("verilog_has_static_locals"))
     refuse("static local state is not a pure expression");
   if(!active.insert(function.name).second)
     refuse("recursive calls are not supported");
@@ -1177,6 +1283,9 @@ exprt verilog_synthesist::assignment_rec(
     // do the array
     new_rhs.old() = synth_expr(new_rhs.old(), symbol_statet::FINAL);
 
+    const auto &guard = static_cast<const exprt &>(lhs.find("#veval_write_in_range"));
+    if(guard.is_not_nil())
+      return assignment_rec(lhs_array, if_exprt{guard, new_rhs, new_rhs.old()});
     return assignment_rec(lhs_array, new_rhs); // recursive call
   }
   else if(lhs.id() == ID_verilog_non_indexed_part_select)
@@ -2804,7 +2913,7 @@ void verilog_synthesist::synth_assert_assume_cover(
       cond_for_comment = sva_cover_exprt(cond_for_comment);
     }
 
-    symbol.location.set_comment(to_string(cond_for_comment));
+    symbol.location.set_comment(veval::frontend::describeExpression(cond_for_comment, ns));
   }
 
   exprt cond;
@@ -2923,7 +3032,7 @@ void verilog_synthesist::synth_assert_assume_cover(
       cond_for_comment = sva_cover_exprt{cond_for_comment};
     }
 
-    symbol.location.set_comment(to_string(cond_for_comment));
+    symbol.location.set_comment(veval::frontend::describeExpression(cond_for_comment, ns));
   }
 
   construct=constructt::OTHER;

@@ -110,6 +110,8 @@ protected:
   // For $ND(...)
   std::size_t nondet_count = 0;
   // Assertion functions are evaluated in a temporary, pure call frame.
+  std::size_t unused_sva_local = 0;
+  exprt synth_sva_instance(const class sva_sequence_property_instance_exprt &, symbol_statet);
   std::size_t pure_sva_depth = 0;
   std::size_t pure_sva_steps = 0;
   std::set<irep_idt> pure_sva_checked;

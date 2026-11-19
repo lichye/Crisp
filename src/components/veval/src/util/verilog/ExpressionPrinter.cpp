@@ -9,7 +9,6 @@
 #include <util/simplify_expr.h>
 #include <util/symbol_table.h>
 #include <util/namespace.h>
-#include <verilog/expr2verilog.h>
 #include <cstdint>
 #include <functional>
 #include <sstream>
@@ -210,7 +209,7 @@ FunctionPrint prepareFunctionPrint(exprt expression, const namespacet& ns) {
         };
         auto print = [&](exprt n) {
             n = replace(std::move(n));
-            return expr2verilog(prepareTypedPrint(std::move(n)), ns);
+            return veval::frontend::productExpression(prepareTypedPrint(std::move(n)), ns);
         };
         for (const auto &[s, value] : bindings)
             statements += "    " + id2string(rename.at(s.identifier()).identifier()) + " = " +

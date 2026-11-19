@@ -15,7 +15,6 @@
 #include <ebmc/transition_system.h>
 #include <temporal-logic/temporal_logic.h>
 #include <trans-word-level/next_symbol.h>
-#include <verilog/expr2verilog.h>
 
 #include <algorithm>
 #include <functional>
@@ -230,7 +229,7 @@ std::string localText(exprt expr, const namespacet& ns) {
     };
     rename(expr);
     // Preserve casts because the wrapper compiles this text as an assumption.
-    return expr2verilog(frontend::prepareTypedPrint(expr), ns);
+    return veval::frontend::productExpression(frontend::prepareTypedPrint(expr), ns);
 }
 
 }  // namespace
@@ -332,7 +331,7 @@ std::map<std::string, InstanceEnvironment> environment(
             premise.source = Premise::Source::TieOff;
             premise.constraint = binding.relation();
             premise.shown = binding.localName() + " == " +
-                            expr2verilog(binding.value, ns) +
+                            veval::frontend::productExpression(binding.value, ns) +
                             " (the design's own tie-off)";
             addPremise(edge.instance, std::move(premise));
         }
@@ -374,7 +373,7 @@ std::map<std::string, InstanceEnvironment> environment(
             premise.constraint =
                 binary_relation_exprt{binding.port, ID_le, limit};
             premise.shown = bareName(binding.port) + " <= " +
-                            expr2verilog(limit, ns) +
+                            veval::frontend::productExpression(limit, ns) +
                             " (the parent drives it through a clamp)";
             addPremise(edge.instance, std::move(premise));
         }

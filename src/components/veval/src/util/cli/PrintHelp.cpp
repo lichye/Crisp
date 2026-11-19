@@ -75,7 +75,7 @@ void usage() {
            "                   root binds the wrapper to its single whole DUT\n"
            "                   and preserves authored assertion/assumption roles.\n"
            "  --generation-profile PATH  transport: flushed diagnostic phase JSONL\n"
-           "  -j N, -jN        lower/transport: property lowering and preparation workers (default 1)\n"
+           "  -j N, -jN        lower/transport: accepted for compatibility, generation uses one thread\n"
            "  --generation-threads N     same as -j N\n"
            "  --log DIR        transport: write the machine-readable record\n"
            "                   to DIR -- transport.json and discharge.json: which\n"
