@@ -654,19 +654,12 @@ exprt verilog_lowering(exprt expr)
   else if(expr.id() == ID_verilog_case_equality)
   {
     // Result is two-valued, comparing x/z as given.
-    // Record what it was: after lowering, `a === b' and `a == b' are the
-    // same expression, and a consumer that needs to refuse the first cannot
-    // tell them apart. See PROVENANCE.md, patch 0024.
-    auto lowered = to_verilog_case_equality_expr(expr).lower();
-    lowered.set(ID_C_verilog_xz_sensitive, "===");
-    return lowered;
+    return to_verilog_case_equality_expr(expr).lower();
   }
   else if(expr.id() == ID_verilog_case_inequality)
   {
     // Result is two-valued, comparing x/z as given.
-    auto lowered = to_verilog_case_inequality_expr(expr).lower();
-    lowered.set(ID_C_verilog_xz_sensitive, "!==");
-    return lowered;
+    return to_verilog_case_inequality_expr(expr).lower();
   }
   else if(expr.id() == ID_verilog_logical_equality)
   {
@@ -678,15 +671,11 @@ exprt verilog_lowering(exprt expr)
   }
   else if(expr.id() == ID_verilog_wildcard_equality)
   {
-    auto lowered = aval_bval(to_verilog_wildcard_equality_expr(expr));
-    lowered.set(ID_C_verilog_xz_sensitive, "==?");
-    return lowered;
+    return aval_bval(to_verilog_wildcard_equality_expr(expr));
   }
   else if(expr.id() == ID_verilog_wildcard_inequality)
   {
-    auto lowered = aval_bval(to_verilog_wildcard_inequality_expr(expr));
-    lowered.set(ID_C_verilog_xz_sensitive, "!=?");
-    return lowered;
+    return aval_bval(to_verilog_wildcard_inequality_expr(expr));
   }
   else if(expr.id() == ID_not)
   {

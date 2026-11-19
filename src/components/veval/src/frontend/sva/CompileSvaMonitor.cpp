@@ -161,8 +161,9 @@ std::string condition(const irept& label, const std::map<hoat::intt, std::string
 }
 
 void compile(const exprt& original, Compiler& compiler, const std::filesystem::path& out) {
+    const auto xz = veval::sva::xzConstruct(original);
     if (veval::sva::hasLocalVariables(original)) {
-        if (!veval::sva::xzConstruct(original).empty())
+        if (!xz.empty())
             throw std::runtime_error("four-state-sensitive SVA with local variables");
         auto encoding = veval::sva::localViolationMonitor(original,"selected");
         const auto data = compiler.name("data"), choice = compiler.name("choice"),
@@ -199,8 +200,6 @@ void compile(const exprt& original, Compiler& compiler, const std::filesystem::p
     if (!abort.is_false() && !veval::sva::abortWindowExact(body))
         throw std::runtime_error("disable iff over a body whose failure can be reported before the "
                                  "attempt's window ends is unsupported (abort window too short)");
-    auto xz = veval::sva::xzConstruct(body);
-    if (xz.empty()) xz = veval::sva::xzConstruct(abort);
     if (!xz.empty()) throw std::runtime_error("four-state-sensitive SVA unsupported: " + xz);
     for (const auto& id : {ID_sva_accept_on, ID_sva_reject_on, ID_sva_sync_accept_on, ID_sva_sync_reject_on})
         if (contains(body, id))

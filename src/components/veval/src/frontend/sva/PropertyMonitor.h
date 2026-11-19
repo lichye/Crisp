@@ -22,9 +22,24 @@ class transition_systemt;
 namespace veval {
 namespace sva {
 
-// The first four-state-sensitive construct, or empty for the supported
-// two-state subset. This inspection never builds a monitor or starts Spot.
-std::string xzConstruct(const exprt&);
+// Keep the result of the source scan in veval metadata. The Verilog
+// lowering API can erase the distinction between case and logical equality.
+inline constexpr char sourceXzOperator[] = "#veval_sva_xz_operator";
+
+inline std::string xzConstruct(const exprt& expr) {
+    const auto& scanned = expr.get(sourceXzOperator);
+    if (!scanned.empty()) return id2string(scanned);
+    if (expr.id() == ID_verilog_case_equality) return "===";
+    if (expr.id() == ID_verilog_case_inequality) return "!==";
+    if (expr.id() == ID_verilog_wildcard_equality) return "==?";
+    if (expr.id() == ID_verilog_wildcard_inequality) return "!=?";
+
+    for (const auto& op : expr.operands()) {
+        auto found = xzConstruct(op);
+        if (!found.empty()) return found;
+    }
+    return {};
+}
 
 // Share the default state expression across empty monitors. IREP copy-on-write
 // keeps later edits independent.
