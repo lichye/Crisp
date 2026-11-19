@@ -25,22 +25,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Make the tools that live in this checkout visible without the user having
-// to arrange it. install.sh places EBMC and the OSS CAD Suite in .deps/,
-// while libcvc5 lives in otherTools/. Both sit at a known place relative to
-// the binary — so `./build/smart design.sv` works straight after an install,
-// which is what the ReadMe promises. An explicit PATH still wins: these are
-// appended, never prepended.
+// Let callers use simulators installed on PATH or in the local tool suite.
 void addBundledToolsToPath(const std::string& self) {
     const auto executableDir = fs::path(self).parent_path();
     const auto root = executableDir.parent_path();
-    // Order matters: oss-cad-suite bundles its own, older cvc5, and ours has
-    // to be found first — the solver version decides what gets synthesised.
     const std::vector<fs::path> candidates = {
         // Release archives put smart and ebmc next to each other in bin/.
         executableDir,
-        root / ".deps/hw-cbmc/src/ebmc",
-        SMART_EBMC_DIR,
         root / "otherTools/cvc5/bin",
         root / ".deps/oss-cad-suite/bin",
         root / "otherTools/oss-cad-suite/bin",
@@ -93,7 +84,12 @@ int main(int argc, char* argv[]) {
         std::vector<char*> blockArgv;
         blockArgv.push_back(argv[0]);
         for (int i = 2; i < argc; ++i) blockArgv.push_back(argv[i]);
-        return runSmartBlock(static_cast<int>(blockArgv.size()), blockArgv.data());
+        try {
+            return runSmartBlock(static_cast<int>(blockArgv.size()), blockArgv.data());
+        } catch (const std::exception& e) {
+            std::cerr << "smart: " << e.what() << "\n";
+            return static_cast<int>(ExitCode::Failure);
+        }
     }
 
     Options options;
@@ -116,6 +112,14 @@ int main(int argc, char* argv[]) {
     }
 
     const auto self = selfPath(argv[0]);
+    if (const auto* ebmc = std::getenv("SMART_EBMC")) {
+        const auto path = fs::absolute(ebmc).string();
+        setenv("SMART_EBMC", path.c_str(), 1);
+    } else {
+        const auto packaged = fs::path(self).parent_path() / "ebmc";
+        if (fs::is_regular_file(packaged))
+            setenv("SMART_EBMC", packaged.c_str(), 1);
+    }
     addBundledToolsToPath(self);
 
     if (options.checkEnvRequested())

@@ -64,6 +64,11 @@ file(GLOB SMART_CORE_SOURCES
 # into the library with its own main() and the build fails on the second one.
 list(FILTER SMART_CORE_SOURCES EXCLUDE REGEX "/test_[^/]*\\.cpp$")
 
+add_library(smart_ebmc STATIC ${SMART_SRC}/helper/Ebmc.cpp)
+target_compile_definitions(smart_ebmc PRIVATE SMART_EBMC_PATH="${HWCBMC_EBMC}")
+target_link_libraries(smart_ebmc PUBLIC Threads::Threads)
+list(FILTER SMART_CORE_SOURCES EXCLUDE REGEX "/Ebmc\\.cpp$")
+
 add_library(smart_core STATIC
     ${SMART_CORE_SOURCES}
     ${SMART_SRC}/smart.cpp          # runSmartBlock(): one block, one process
@@ -79,7 +84,7 @@ target_include_directories(smart_core PUBLIC
     ${SMART_GENERATED}
     ${NLOHMANN_INCLUDE_DIR})
 
-target_link_libraries(smart_core PUBLIC Threads::Threads cvc5_api)
+target_link_libraries(smart_core PUBLIC Threads::Threads cvc5_api smart_ebmc)
 
 # --- frontend ---------------------------------------------------------------
 # SVModule is the frozen regex ORACLE and the ModuleInfo contract (WP2-regex);
@@ -112,6 +117,7 @@ target_link_libraries(smart_mus PUBLIC cvc5_api)
 # --- emit (WP7): final EBMC gate + the file the user gets -------------------
 add_library(smart_emit STATIC ${SMART_SRC}/emit/AssertionWriter.cpp)
 target_include_directories(smart_emit PUBLIC ${SMART_SRC}/emit)
+target_link_libraries(smart_emit PUBLIC smart_ebmc)
 add_executable(smart
     ${SMART_SRC}/main.cpp
     ${SMART_SRC}/pipeline/Pipeline.cpp
@@ -124,5 +130,3 @@ target_link_libraries(smart PRIVATE
 # The product sits at the top of the build tree, not among the dev tools.
 set_target_properties(smart PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-target_compile_definitions(smart PRIVATE
-    SMART_EBMC_DIR="${HWCBMC_DIR}/src/ebmc")

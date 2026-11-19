@@ -1,0 +1,36 @@
+#ifndef SMART_HELPER_EBMC_H
+#define SMART_HELPER_EBMC_H
+
+#include <string>
+#include <vector>
+
+namespace smart::helper {
+
+struct EbmcOptions {
+    std::string ebmc;
+    std::string topModule;
+    int bound = 10;
+    bool unbounded = true;
+    int timeoutSeconds = 0;  // A synthesis block already has its own deadline.
+    std::vector<std::string> extraFiles;
+    std::size_t designFileIndex = 0;
+};
+
+enum class EbmcStatus { Verified, Refuted, Unknown, TimedOut, Error };
+
+struct EbmcResult {
+    EbmcStatus status;
+    std::string detail;
+};
+
+std::string ebmcExecutable();
+std::string ebmcCommand(const std::string& designFile, const EbmcOptions& options);
+std::string freshPropertyLabel(const std::string& source,
+                               const std::vector<std::string>& extraFiles);
+EbmcResult checkProperty(const std::string& designFile, const EbmcOptions& options,
+                         const std::string& label, const std::string& trace = {},
+                         const std::string& preferredScope = {});
+
+}  // namespace smart::helper
+
+#endif

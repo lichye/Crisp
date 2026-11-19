@@ -54,6 +54,7 @@ struct BlockRunnerOptions {
     std::string injectModule;
     std::string configPath;   // resolved config, in the new flat schema
     std::string logsDir;
+    std::vector<std::string> designFiles;
     int jobs = 1;
     int coreTimeoutSeconds = 100;
 };

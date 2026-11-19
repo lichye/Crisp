@@ -15,28 +15,25 @@
 #ifndef SMART_EMIT_ASSERTIONWRITER_H
 #define SMART_EMIT_ASSERTIONWRITER_H
 
+#include "../helper/Ebmc.h"
+
 #include <string>
 #include <vector>
 
 namespace smart {
 namespace emit {
 
-struct CheckOptions {
-    std::string ebmc = "ebmc";
-    std::string topModule;
+struct CheckOptions : helper::EbmcOptions {
+    CheckOptions() { timeoutSeconds = 180; }
     // Where the property is written. EBMC still elaborates from topModule; in
     // a hierarchical design the invariant belongs to the module its variables
     // live in. Empty means topModule.
     std::string injectModule;
-    int bound = 10;
-    bool unbounded = true;    // final output is an invariant by default
-    int timeoutSeconds = 180;
     int jobs = 1;
     std::string scratchDir;   // where the per-assertion copies are written
-    std::vector<std::string> extraFiles;  // other design files to pass to EBMC
 };
 
-enum class CheckStatus { Verified, Refuted, TimedOut, Error };
+using CheckStatus = helper::EbmcStatus;
 
 // What guarantee the emitted assertions carry. Keeping this explicit prevents
 // an experiment run with the final checker disabled from labelling candidates
@@ -47,6 +44,7 @@ struct CheckResult {
     std::string assertion;
     CheckStatus status = CheckStatus::Error;
     double seconds = 0.0;
+    std::string detail;
 };
 
 // The EBMC command for one assertion. Split out because getting it wrong is
@@ -64,7 +62,8 @@ std::string fileDeclaringModule(const std::vector<std::string>& files,
                                 const std::string& name);
 
 std::string injectAssertions(const std::string& source, const std::string& top,
-                             const std::vector<std::string>& assertions);
+                             const std::vector<std::string>& assertions,
+                             const std::string& label = {});
 
 std::vector<CheckResult> checkAssertions(const std::string& designFile,
                                          const std::vector<std::string>& assertions,

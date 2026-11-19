@@ -289,6 +289,7 @@ ExitCode Pipeline::run(RunSummary& summary) {
         }
     }
     summary.workDir = work.root();
+    std::vector<std::string> workdirDesign;
 
     try {
         work.create();
@@ -303,7 +304,11 @@ ExitCode Pipeline::run(RunSummary& summary) {
                 source = frontend::injectAssumes(source, top, assumes,
                                                  options_.getString("clock"));
             const auto name = fs::path(file).filename().string();
-            writeFile(work.verilogDir() + "/" + name, source);
+            const auto copy = work.verilogDir() + "/" + name;
+            if (std::find(workdirDesign.begin(), workdirDesign.end(), copy) != workdirDesign.end())
+                throw std::runtime_error("design filenames collide in the work directory: " + name);
+            writeFile(copy, source);
+            workdirDesign.push_back(copy);
             writeFile(work.formalDir() + "/" + name, source);
         }
         writeFile(work.effectiveConfigFile(), options_.toJson());
@@ -390,11 +395,6 @@ ExitCode Pipeline::run(RunSummary& summary) {
     try {
         // Simulate the design as it sits in the workdir, so the traces match
         // the sources the blocks reason about.
-        std::vector<std::string> workdirDesign;
-        for (const auto& file : designFiles)
-            workdirDesign.push_back(work.verilogDir() + "/" +
-                                    fs::path(file).filename().string());
-
         // The workdir root, not sim_src: runSimulations makes its own
         // sim_src/ underneath for the assume-stripped copies.
         const auto sim = simgen::runSimulations(info, workdirDesign, work.root(),
@@ -499,6 +499,7 @@ ExitCode Pipeline::run(RunSummary& summary) {
     runner.injectModule = injectModule;
     runner.configPath = work.effectiveConfigFile();
     runner.logsDir = work.logsDir();
+    runner.designFiles = workdirDesign;
     runner.jobs = jobs;
     runner.coreTimeoutSeconds = static_cast<int>(options_.getInt("core_timeout"));
 
@@ -854,26 +855,28 @@ ExitCode Pipeline::run(RunSummary& summary) {
         check.scratchDir = work.formalDir();
         // The property goes into whichever file declares the target module,
         // and every other file is handed to EBMC untouched.
-        std::vector<std::string> inWorkdir;
-        for (const auto& file : designFiles)
-            inWorkdir.push_back(work.verilogDir() + "/" +
-                                fs::path(file).filename().string());
-        auto target = emit::fileDeclaringModule(inWorkdir, injectModule);
-        if (target.empty()) target = inWorkdir.front();
-        for (const auto& file : inWorkdir)
-            if (file != target) check.extraFiles.push_back(file);
+        auto target = emit::fileDeclaringModule(workdirDesign, injectModule);
+        if (target.empty()) throw std::runtime_error("cannot locate module " + injectModule);
+        check.extraFiles = workdirDesign;
+        const auto location = std::find(check.extraFiles.begin(), check.extraFiles.end(), target);
+        check.designFileIndex = static_cast<std::size_t>(location - check.extraFiles.begin());
+        check.extraFiles.erase(location);
 
         say("[" + timestamp() + "] checking " + std::to_string(assertions.size()) +
             " assertions against the original design");
 
         const auto checked = emit::checkAssertions(target, assertions, check);
-        std::size_t refuted = 0, timedOutChecks = 0, errors = 0;
+        std::size_t refuted = 0, unknown = 0, timedOutChecks = 0, errors = 0;
         for (const auto& result : checked) {
             switch (result.status) {
                 case emit::CheckStatus::Verified: verified.push_back(result.assertion); break;
                 case emit::CheckStatus::Refuted: ++refuted; break;
+                case emit::CheckStatus::Unknown: ++unknown; break;
                 case emit::CheckStatus::TimedOut: ++timedOutChecks; break;
-                case emit::CheckStatus::Error: ++errors; break;
+                case emit::CheckStatus::Error:
+                    ++errors;
+                    std::cerr << "smart: EBMC final check failed: " << result.detail << "\n";
+                    break;
             }
         }
         // Record HOW they were proved, not just how many. A bounded run
@@ -960,7 +963,7 @@ ExitCode checkEnvironment(const Options& options, const std::string& selfExecuta
         {"verilator", "--version", useVerilator},
         {"iverilog", "-V", !useVerilator},
         {"vvp", "-V", !useVerilator},
-        {"ebmc", "--version", true},
+        {helper::ebmcExecutable(), "--version", true},
         {"cvc5", "--version", false},
     };
 

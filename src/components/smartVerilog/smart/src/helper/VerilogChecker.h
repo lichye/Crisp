@@ -7,6 +7,7 @@
 #include "SygusExpr.h"
 #include "Module.h"
 #include "Timer.h"
+#include "Ebmc.h"
 enum PropertyType{
     
     SAFT_PROPERTY,
@@ -50,7 +51,9 @@ class VerilogChecker {
         
         //The check function will return true if the state is reachable
         bool checkStateReachability(State*);
-        bool checkExprSafety(SygusFunction*,std::string);
+        smart::helper::EbmcStatus checkExprSafety(SygusFunction*, const std::string& tracePath,
+                                                  const std::string& scope);
+        void setDesignFiles(const std::vector<std::string>& files);
         void setBound(int);
         // Bound for checkStateReachability only; -1 selects k-induction.
         void setReachabilityBound(int);
@@ -94,8 +97,10 @@ class VerilogChecker {
 
         void writeVerilogFile();
         void deleteVerilogFile();
-        bool runEBMC();
-        bool runEBMC(std::string);
+        std::string propertyLabel;
+        std::size_t designFileIndex = 0;
+        smart::helper::EbmcStatus runEBMC(const std::string& trace = {},
+                                         const std::string& scope = {});
         bool runSby();
 
         std::string generateFormalFilePath(PropertyType);
