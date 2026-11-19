@@ -5,32 +5,38 @@ find_package(FLEX REQUIRED)
 find_package(BISON REQUIRED)
 find_package(Threads REQUIRED)
 
-# libcvc5: the solver behind SyGuS (WP6) and the MUS/minimiser (WP5). Point
-# CVC5_ROOT at an install prefix (otherTools/cvc5 by default, which is what
-# install.sh builds).
-set(CVC5_ROOT "${CMAKE_SOURCE_DIR}/otherTools/cvc5" CACHE PATH
-    "cvc5 install prefix (headers + static libs)")
-find_path(CVC5_INCLUDE_DIR cvc5/cvc5.h HINTS ${CVC5_ROOT}/include)
-find_library(CVC5_LIBRARY cvc5 HINTS ${CVC5_ROOT}/lib64 ${CVC5_ROOT}/lib)
-find_library(CVC5_PARSER_LIBRARY cvc5parser HINTS ${CVC5_ROOT}/lib64 ${CVC5_ROOT}/lib)
-if(NOT CVC5_INCLUDE_DIR OR NOT CVC5_LIBRARY OR NOT CVC5_PARSER_LIBRARY)
-    message(FATAL_ERROR
-        "libcvc5 not found under ${CVC5_ROOT}. Run 'make deps' from the Crisp repository root, "
-        "or pass -DCVC5_ROOT=<prefix>.")
+# The pinned static package supplies matching headers, archives and CLI.
+set(CVC5_ROOT "${CMAKE_SOURCE_DIR}/../cvc5/packages/1.4.2" CACHE PATH
+    "cvc5 1.4.2 static installation")
+get_filename_component(CVC5_ROOT "${CVC5_ROOT}" ABSOLUTE)
+set(CVC5_EXECUTABLE "${CVC5_ROOT}/bin/cvc5")
+execute_process(COMMAND "${CVC5_EXECUTABLE}" --version
+    RESULT_VARIABLE CVC5_VERSION_RESULT OUTPUT_VARIABLE CVC5_VERSION_TEXT)
+if(NOT CVC5_VERSION_RESULT STREQUAL "0" OR
+   NOT CVC5_VERSION_TEXT MATCHES "^cvc5 1[.]4[.]2( |$)")
+    message(FATAL_ERROR "Expected cvc5 1.4.2 under ${CVC5_ROOT}. Run 'make deps' or set CVC5_ROOT.")
+endif()
+
+set(CVC5_LIB_DIR "${CVC5_ROOT}/lib")
+if(NOT EXISTS "${CVC5_LIB_DIR}/libcvc5.a")
+    set(CVC5_LIB_DIR "${CVC5_ROOT}/lib64")
+endif()
+set(CVC5_STATIC_LIBS)
+foreach(dep cvc5parser cvc5 cadical picpolyxx picpoly mpfr gmpxx gmp)
+    set(archive "${CVC5_LIB_DIR}/lib${dep}.a")
+    if(NOT EXISTS "${archive}")
+        message(FATAL_ERROR "Missing cvc5 static dependency ${archive}")
+    endif()
+    list(APPEND CVC5_STATIC_LIBS "${archive}")
+endforeach()
+if(NOT EXISTS "${CVC5_ROOT}/include/cvc5/cvc5_parser.h")
+    message(FATAL_ERROR "Missing cvc5 headers under ${CVC5_ROOT}/include")
 endif()
 
 add_library(cvc5_api INTERFACE)
-target_include_directories(cvc5_api INTERFACE ${CVC5_INCLUDE_DIR})
-# The static build pulls its own dependencies in; list them explicitly since
-# the install ships no CMake usage requirements for them.
-foreach(dep cadical picpolyxx picpoly gmpxx gmp)
-    find_library(CVC5_DEP_${dep} ${dep} HINTS ${CVC5_ROOT}/lib64 ${CVC5_ROOT}/lib)
-    if(CVC5_DEP_${dep})
-        list(APPEND CVC5_DEPS ${CVC5_DEP_${dep}})
-    endif()
-endforeach()
-target_link_libraries(cvc5_api INTERFACE
-    ${CVC5_PARSER_LIBRARY} ${CVC5_LIBRARY} ${CVC5_DEPS})
+target_include_directories(cvc5_api INTERFACE "${CVC5_ROOT}/include")
+target_compile_definitions(cvc5_api INTERFACE SMART_CVC5_PATH="${CVC5_EXECUTABLE}")
+target_link_libraries(cvc5_api INTERFACE ${CVC5_STATIC_LIBS})
 
 set(SMART_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(SMART_GENERATED ${CMAKE_CURRENT_BINARY_DIR}/generated)

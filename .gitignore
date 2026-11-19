@@ -4,6 +4,7 @@
 /docs/
 /crisp-out/
 /log/
+/src/components/cvc5/packages/
 /src/components/smartVerilog/.deps
 /src/components/smartVerilog/otherTools
 /src/components/smartVerilog/build

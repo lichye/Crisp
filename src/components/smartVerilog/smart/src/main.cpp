@@ -32,7 +32,6 @@ void addBundledToolsToPath(const std::string& self) {
     const std::vector<fs::path> candidates = {
         // Release archives put smart and ebmc next to each other in bin/.
         executableDir,
-        root / "otherTools/cvc5/bin",
         root / ".deps/oss-cad-suite/bin",
         root / "otherTools/oss-cad-suite/bin",
     };
@@ -119,6 +118,14 @@ int main(int argc, char* argv[]) {
         const auto packaged = fs::path(self).parent_path() / "ebmc";
         if (fs::is_regular_file(packaged))
             setenv("SMART_EBMC", packaged.c_str(), 1);
+    }
+    if (const auto* cvc5 = std::getenv("SMART_CVC5")) {
+        const auto path = fs::absolute(cvc5).string();
+        setenv("SMART_CVC5", path.c_str(), 1);
+    } else {
+        const auto packaged = fs::path(self).parent_path() / "cvc5";
+        if (fs::is_regular_file(packaged))
+            setenv("SMART_CVC5", packaged.c_str(), 1);
     }
     addBundledToolsToPath(self);
 

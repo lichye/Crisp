@@ -1,4 +1,5 @@
 #include "Pipeline.h"
+#include "SyGuSGenerater.h"
 
 #include "../Version.h"
 
@@ -956,6 +957,7 @@ ExitCode checkEnvironment(const Options& options, const std::string& selfExecuta
         std::string name;
         std::string versionFlag;
         bool required;
+        std::string executable{};
     };
     const bool useVerilator = options.getString("simulator") == "verilator" ||
                               options.getString("simulator").empty();
@@ -963,13 +965,13 @@ ExitCode checkEnvironment(const Options& options, const std::string& selfExecuta
         {"verilator", "--version", useVerilator},
         {"iverilog", "-V", !useVerilator},
         {"vvp", "-V", !useVerilator},
-        {helper::ebmcExecutable(), "--version", true},
-        {"cvc5", "--version", false},
+        {"ebmc", "--version", true, helper::ebmcExecutable()},
+        {"cvc5", "--version", options.getBool("sygus_subprocess"), cvc5Executable()},
     };
 
     bool ok = true;
     for (const auto& tool : tools) {
-        const auto path = which(tool.name);
+        const auto path = which(tool.executable.empty() ? tool.name : tool.executable);
         if (path.empty()) {
             std::cout << "[MISSING] " << tool.name
                       << (tool.required ? "" : " (optional)") << "\n";

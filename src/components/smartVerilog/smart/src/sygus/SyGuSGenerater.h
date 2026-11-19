@@ -7,6 +7,8 @@
 #include "Utils.h"
 #include "Value.h"
 #include "State.h"
+std::string cvc5Executable();
+
 class SyGuSGenerater
 {
     public:
