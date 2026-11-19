@@ -67,6 +67,7 @@ void check_fifo(const fs::path& file, std::uint64_t cpus, const FifoLines& ln) {
         origin(*task.reset, salt, ln.reset);
         require(task.includes.empty() && task.defines.empty() && task.params.empty(), "fifo design lists");
         require(task.level.value == Level::automatic && !task.level.source && !task.depth, "fifo level/depth");
+        require(task.undriven.value == Undriven::seq && !task.undriven.source, "default undriven policy");
     }
     const auto& first = tasks[0];
     require(first.name.value().value == "task1", "first task name");
@@ -122,6 +123,14 @@ void positive_cases(const fs::path& dir, std::uint64_t cpus) {
         require(pair.size() == 2 && pair[0].timeout_seconds.value == 5 &&
                 pair[1].timeout_seconds.value == 100, "9.6 scope priority");
     }
+    write(input, tasks + "[options]\nundriven const\ntask1: undriven error\n" + files);
+    pair = ready(input);
+    require(pair[0].undriven.value == Undriven::error && pair[1].undriven.value == Undriven::constant,
+            "task overrides the common undriven policy");
+    const auto salt = fs::absolute(input).lexically_normal();
+    origin(pair[0].undriven, salt, 6);
+    origin(pair[1].undriven, salt, 5);
+
     write(input, files);
     const auto unnamed = ready(input);
     require(unnamed.size() == 1 && !unnamed[0].name, "9.7 unnamed task");
@@ -162,7 +171,9 @@ const InvalidCase invalid[] = {
     {"14-no-tasks", "[options]\ntask1:\nmode bdd\n", 2, "task1"},
     {"15-separator", "[files]\n--\n", 2, "--"},
     {"16-empty-tasks", "[files]\nrtl/fifo.sv\n[tasks]\n", 3, "tasks"},
-    {"17-preamble", "top fifo\n[files]\nrtl/fifo.sv\n", 1, "section"}
+    {"17-preamble", "top fifo\n[files]\nrtl/fifo.sv\n", 1, "section"},
+    {"18-undriven", "[options]\nundriven unknown\n", 2, "expected seq, const, error"},
+    {"19-undriven-duplicate", "[options]\nundriven seq\nundriven const\n", 3, "duplicate setting"}
 };
 
 } // namespace

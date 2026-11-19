@@ -12,13 +12,16 @@
 #include <verilog/verilog_ebmc_language.h>
 
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <map>
+#include <sstream>
 
 namespace crisp::check {
 namespace {
 namespace fs = std::filesystem;
 using front::Mode;
+using front::Undriven;
 using Property = ebmc_propertiest::propertyt;
 
 std::string reset_expression(const front::Reset& reset, const std::string& top) {
@@ -26,7 +29,8 @@ std::string reset_expression(const front::Reset& reset, const std::string& top) 
 }
 
 cmdlinet command_line(const front::Task& task) {
-    std::vector<std::string> args{"crisp", "--systemverilog"};
+    std::vector<std::string> args{"crisp", "--systemverilog", "--undriven",
+                                  task.undriven.value == Undriven::constant ? "const" : "seq"};
     for (const auto& dir : task.includes) args.insert(args.end(), {"-I", dir.value.string()});
     for (const auto& item : task.defines) {
         const auto& define = item.value;
@@ -52,7 +56,8 @@ cmdlinet command_line(const front::Task& task) {
     std::vector<const char*> argv;
     for (const auto& arg : args) argv.push_back(arg.c_str());
     cmdlinet cmd;
-    if (cmd.parse(argv.size(), argv.data(), "I:D:(systemverilog)(top):(reset):(bdd)(ic3)(bound):(k-induction)(aig)") ||
+    if (cmd.parse(argv.size(), argv.data(),
+                  "I:D:(systemverilog)(top):(reset):(bdd)(ic3)(bound):(k-induction)(aig)(undriven):(undriven-report)") ||
         config.set(cmd))
         throw std::runtime_error("EBMC rejected the task options");
     // In this fork --aig takes precedence over --k-induction and dispatches
@@ -88,6 +93,46 @@ public:
         create_reset_logic(reset_expression(reset, top), system);
     }
 };
+
+class CoutCapture {
+public:
+    explicit CoutCapture(std::ostream& target) : original(std::cout.rdbuf(target.rdbuf())) {}
+    ~CoutCapture() { std::cout.rdbuf(original); }
+
+    CoutCapture(const CoutCapture&) = delete;
+    CoutCapture& operator=(const CoutCapture&) = delete;
+
+private:
+    std::streambuf* original;
+};
+
+void report_undriven(const cmdlinet& cmd, ui_message_handlert& messages, Undriven policy, Reporter reporter) {
+    auto report_cmd = cmd;
+    report_cmd.set("undriven-report");
+    std::ostringstream output;
+    {
+        // EBMC exposes the analysis through its report-only frontend path.
+        CoutCapture capture(output);
+        Verilog(report_cmd, messages).transition_system();
+    }
+    std::istringstream records(output.str());
+    std::string errors, line;
+    constexpr std::string_view prefix = "UNDRIVEN\t";
+    while (std::getline(records, line)) {
+        if (line.compare(0, prefix.size(), prefix) != 0) continue;
+        const auto end = line.find('\t', prefix.size());
+        if (end == std::string::npos) throw std::runtime_error("malformed EBMC undriven report");
+        const auto detail = "undriven " + line.substr(prefix.size(), end - prefix.size()) +
+                            " at " + line.substr(end + 1);
+        if (policy == Undriven::error) {
+            if (!errors.empty()) errors += '\n';
+            errors += "crisp: error: " + detail;
+        } else {
+            reporter.send(0, "undriven", detail);
+        }
+    }
+    if (!errors.empty()) throw std::runtime_error(errors);
+}
 
 // The pinned IC3 engine returns a verdict without a witness. Reconstruct a
 // reachable counterexample for that exact assertion under the same deadline.
@@ -137,6 +182,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter) 
     format_hooks();
     ui_message_handlert messages(cmd, "Crisp");
     messages.set_verbosity(messaget::M_WARNING);
+    report_undriven(cmd, messages, task.undriven.value, reporter);
     Verilog language(cmd, messages);
     auto system = language.transition_system();
     if (!system) throw std::runtime_error("EBMC produced no transition system");

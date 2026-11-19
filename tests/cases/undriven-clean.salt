@@ -1,0 +1,15 @@
+[tasks]
+hold
+sequence
+reject
+
+[options]
+mode bdd
+smart off
+veval off
+hold: undriven const
+sequence: undriven seq
+reject: undriven error
+
+[files]
+undriven-clean.sv
