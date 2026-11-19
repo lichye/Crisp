@@ -1,28 +1,25 @@
 #include "HwcbmcFrontend.h"
 
-#include <verilog/verilog_expr.h>
-#include <verilog/verilog_language.h>
-#include <verilog/verilog_parse_tree.h>
+#include <ebmc/ebmc_error.h>
+#include <ebmc/transition_system.h>
+#include <verilog/verilog_bind.h>
+#include <verilog/verilog_bits.h>
+#include <verilog/verilog_ebmc_language.h>
 #include <verilog/verilog_types.h>
-
-#include <langapi/language_file.h>
+#include <verilog/verilog_typecheck_base.h>
 
 #include <util/arith_tools.h>
+#include <util/cmdline.h>
 #include <util/invariant.h>
-#include <util/json.h>
 #include <util/message.h>
-#include <util/options.h>
-#include <util/string2int.h>
 #include <util/symbol_table.h>
-#include <util/xml.h>
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <filesystem>
-#include <map>
 #include <fstream>
-#include <memory>
+#include <limits>
+#include <map>
 #include <stdexcept>
 
 namespace smart {
@@ -45,9 +42,9 @@ public:
     }
 
     void print(unsigned level, const std::string& message,
-               const source_locationt&) override
+               const source_locationt& location) override
     {
-        print(level, message);
+        print(level, location.is_nil() ? message : location.as_string() + ": " + message);
     }
 
     // Structured output is unused here; hw-cbmc only emits it under
@@ -60,38 +57,35 @@ public:
     std::string errors;
 };
 
-std::string readableErrors(const CollectingMessageHandler& handler)
+std::string rootInstance(const std::string& top)
 {
-    return handler.errors.empty() ? std::string("parse error") : handler.errors;
+    return id2string(verilog_module_symbol(verilog_root_module_name())) + "." + top;
 }
 
-// Verilog identifiers in the symbol table are "Verilog::<module>[.<name>]".
-irep_idt moduleSymbol(const std::string& top)
+int widthOf(const typet& type, const std::string& name)
 {
-    return "Verilog::" + top;
+    const auto width = verilog_bits_opt(type);
+    if(!width || *width <= 0 || *width > std::numeric_limits<int>::max())
+        throw std::runtime_error("unsupported width for '" + name + "'");
+    return static_cast<int>(width->to_long());
 }
 
-// Resolved bit width of an elaborated type, or -1 when it is not a plain
-// bit-vector (matching the oracle's "unknown width" = JSON null).
-int widthOf(const typet& type)
+// Use EBMC's parsing and hierarchy elaboration before RTL lowering.
+class Frontend : public verilog_ebmc_languaget
 {
-    if(type.id() == ID_bool)
-        return 1;
+public:
+    using verilog_ebmc_languaget::verilog_ebmc_languaget;
+    using verilog_ebmc_languaget::parse;
 
-    if(type.id() == ID_unsignedbv || type.id() == ID_signedbv ||
-       type.id() == ID_verilog_unsignedbv || type.id() == ID_verilog_signedbv)
+    symbol_tablet elaborate(const parse_treest& trees, const irep_idt& top)
     {
-        const auto width = type.get_size_t(ID_width);
-        return width == 0 ? -1 : static_cast<int>(width);
+        auto symbols = elaborate_compilation_units(trees);
+        elaborate_module_hierarchy(trees, {top}, symbols);
+        check_bind_directives(symbols);
+        return symbols;
     }
+};
 
-    return -1;
-}
-
-// `(* anyseq *)` / `(* anyconst *)`. Attribute shape in the parse tree:
-//   verilog_attributes -> 0: verilog_attribute -> * name: symbol(base_name)
-// NOTE this only works with the patch in tools/patches/hw-cbmc/ applied;
-// unpatched hw-cbmc silently drops single-attribute instances.
 bool hasAttribute(const irept& decl, const char* name)
 {
     for(const auto& attribute : decl.find(ID_verilog_attributes).get_sub())
@@ -137,174 +131,66 @@ const verilog_module_sourcet* findModule(const verilog_parse_treet& parse_tree,
     return nullptr;
 }
 
-void collectFreeRegs(const verilog_module_sourcet& module, ModuleInfo& info)
+std::vector<FreeReg> freeRegs(const verilog_module_sourcet& module,
+                             const symbol_tablet& symbols, const std::string& instance)
 {
-    for(const auto& module_item : module.module_items())
+    std::vector<FreeReg> regs;
+    for(const auto& item : module.module_items())
     {
-        if(module_item.id() != ID_decl)
+        if(item.id() != ID_decl)
             continue;
-
-        const auto& decl =
-            static_cast<const verilog_declt&>(static_cast<const irept&>(module_item));
-
+        const auto& decl = static_cast<const verilog_declt&>(static_cast<const irept&>(item));
         const bool anyseq = hasAttribute(decl, "anyseq");
-        const bool anyconst = hasAttribute(decl, "anyconst");
-        if(!anyseq && !anyconst)
+        if(!anyseq && !hasAttribute(decl, "anyconst"))
             continue;
 
         for(const auto& declarator : decl.declarators())
         {
-            FreeReg reg;
-            reg.kind = anyseq ? "anyseq" : "anyconst";
-            reg.width = -1;  // filled from the symbol table below
-            reg.name = id2string(declarator.base_name());
-            info.freeRegs.push_back(std::move(reg));
+            const auto name = id2string(declarator.base_name());
+            const auto qualified = instance + "." + name;
+            const auto& symbol = symbols.lookup_ref(qualified);
+            regs.push_back({anyseq ? "anyseq" : "anyconst", widthOf(symbol.type, qualified), name});
         }
     }
+    return regs;
 }
 
-// Width of an UNELABORATED declaration type. Only constant ranges resolve
-// here; `[W-1:0]` cannot, and yields -1 like the oracle's null. Used solely
-// on the degraded path — the elaborated symbol table is the real source.
-int parseTreeWidth(const typet& type)
+ModuleInfo moduleInfo(const verilog_module_sourcet& module, const symbol_tablet& symbols)
 {
-    if(type.is_nil() || type.id().empty() || type.id() == ID_reg ||
-       type.id() == ID_wire || type.id() == ID_bool)
-        return 1;
-
-    if(type.id() == ID_verilog_packed_array)
+    ModuleInfo info;
+    info.top = id2string(module.base_name());
+    const auto instance = rootInstance(info.top);
+    const auto& symbol = symbols.lookup_ref(verilog_module_symbol(module.base_name()));
+    for(const auto& port : to_module_type(symbol.type).ports())
     {
-        const auto& range = type.find(ID_range).get_sub();
-        if(range.size() != 2)
-            return -1;
-        const auto msb = string2optional_int(id2string(range[0].get(ID_value)));
-        const auto lsb = string2optional_int(id2string(range[1].get(ID_value)));
-        if(!msb.has_value() || !lsb.has_value())
-            return -1;
-        return std::abs(*msb - *lsb) + 1;
+        const auto name = id2string(port.base_name());
+        if(port.ref())
+            throw std::runtime_error("unsupported ref port '" + name + "'");
+        const auto direction = port.input() && port.output() ? "inout"
+                               : port.output() ? "output" : "input";
+        info.ports.push_back({direction, widthOf(port.type(), name), name});
     }
 
-    return -1;
-}
-
-std::string directionOf(const irep_idt& decl_class)
-{
-    if(decl_class == ID_input)
-        return "input";
-    if(decl_class == ID_inout)
-        return "inout";
-    if(decl_class == ID_output || decl_class == "output_register")
-        return "output";
-    return "";
-}
-
-// Fallback for designs hw-cbmc parses but cannot elaborate: read the ports
-// straight off the parse tree. ANSI headers carry the direction on the port
-// declaration; non-ANSI ones list bare names in the header and declare the
-// directions among the module items, so both are handled.
-void fillPortsFromParseTree(const verilog_module_sourcet& module, ModuleInfo& info)
-{
-    std::map<std::string, std::pair<std::string, int>> declared;  // name -> (dir, width)
-    for(const auto& module_item : module.module_items())
+    const auto prefix = instance + ".";
+    for(const auto& [id, entry] : symbols.symbols)
     {
-        if(module_item.id() != ID_decl)
+        const auto name = id2string(id);
+        if(!entry.is_macro || name.compare(0, prefix.size(), prefix) != 0 ||
+           name.find('.', prefix.size()) != std::string::npos)
             continue;
-        const auto& decl =
-            static_cast<const verilog_declt&>(static_cast<const irept&>(module_item));
-        const auto direction = directionOf(decl.get_class());
-        if(direction.empty())
-            continue;
-        for(const auto& declarator : decl.declarators())
-            declared[id2string(declarator.get(ID_base_name))] = {
-                direction, parseTreeWidth(decl.type())};
-    }
-
-    for(const auto& port : module.ports())
-    {
-        const auto header_direction = directionOf(port.get_class());
-        for(const auto& declarator : port.declarators())
+        if(const auto value = numeric_cast<mp_integer>(entry.value))
         {
-            Port p;
-            p.name = id2string(declarator.get(ID_base_name));
-            p.dir = header_direction;
-            p.width = parseTreeWidth(port.type());
-
-            const auto found = declared.find(p.name);
-            if(p.dir.empty() && found != declared.end())
-            {
-                p.dir = found->second.first;
-                p.width = found->second.second;
-            }
-            if(p.dir.empty())
-                p.dir = "input";  // Verilog's default for an undeclared port
-
-            info.ports.push_back(std::move(p));
+            if(*value < std::numeric_limits<long long>::min() ||
+               *value > std::numeric_limits<long long>::max())
+                throw std::runtime_error("parameter '" + name + "' exceeds SMART's integer range");
+            info.params[id2string(entry.base_name)] = value->to_long();
         }
     }
-}
 
-// Ports come from the ELABORATED module type, not the parse tree: it
-// normalises ANSI and non-ANSI port styles into one ordered list carrying
-// direction flags and resolved widths.
-void fillPortsFromSymbolTable(const symbol_tablet& symbol_table,
-                              const std::string& top, ModuleInfo& info)
-{
-    const auto* module_symbol = symbol_table.lookup(moduleSymbol(top));
-    if(module_symbol == nullptr)
-        return;
-
-    const auto& ports =
-        static_cast<const exprt&>(module_symbol->type.find(ID_ports)).operands();
-
-    for(const auto& port : ports)
-    {
-        if(port.id() != ID_symbol)
-            continue;
-
-        Port p;
-        const bool is_input = port.get_bool(ID_input);
-        const bool is_output = port.get_bool(ID_output);
-        p.dir = (is_input && is_output) ? "inout" : (is_output ? "output" : "input");
-        p.width = widthOf(port.type());
-        p.name = id2string(port.get("#name"));
-        if(p.name.empty())
-        {
-            // Fall back to the tail of the qualified identifier.
-            const std::string identifier = id2string(to_symbol_expr(port).get_identifier());
-            const auto dot = identifier.rfind('.');
-            p.name = dot == std::string::npos ? identifier : identifier.substr(dot + 1);
-        }
-        info.ports.push_back(std::move(p));
-    }
-}
-
-void fillWidthsAndParams(const symbol_tablet& symbol_table,
-                         const std::string& top, ModuleInfo& info)
-{
-    const irep_idt module_identifier = moduleSymbol(top);
-    const std::string prefix = id2string(module_identifier) + ".";
-
-    for(auto& reg : info.freeRegs)
-    {
-        const auto* symbol = symbol_table.lookup(prefix + reg.name);
-        if(symbol != nullptr)
-            reg.width = widthOf(symbol->type);
-    }
-
-    // Elaborated compile-time constants of the module: `parameter` (port list
-    // or body) and `localparam` alike land as is_macro symbols with a
-    // constant value. Reporting all of them is a deliberate superset of what
-    // the regex oracle could evaluate — see the WP2 divergence report.
-    for(const auto& [name, symbol] : symbol_table.symbols)
-    {
-        if(symbol.module != module_identifier || !symbol.is_macro ||
-           symbol.value.is_nil())
-            continue;
-
-        const auto value = numeric_cast<mp_integer>(symbol.value);
-        if(value.has_value())
-            info.params[id2string(symbol.base_name)] = value->to_long();
-    }
+    info.freeRegs = freeRegs(module, symbols, instance);
+    info.hasAssume = std::any_of(module.module_items().begin(), module.module_items().end(),
+                                [](const auto& item) { return containsAssume(item); });
+    return info;
 }
 
 }  // namespace
@@ -407,131 +293,78 @@ std::vector<std::string> designFiles(const std::string& path,
 }  // namespace
 
 ModuleInfo parseModuleFile(const std::string& path, const std::string& top,
-                           HwcbmcOptions& options)
+                           const HwcbmcOptions& options, std::vector<InstanceFreeReg>* instanceRegs)
 {
-    CollectingMessageHandler message_handler;
+    CollectingMessageHandler messages;
+    cmdlinet command;
+    const char* program = "smart";
+    command.parse(1, &program, "I:D:");
+    command.args = designFiles(path, top, options);
+    const auto parent = std::filesystem::path(path).parent_path();
+    command.set('I', parent.empty() ? "." : parent.string());
+    for(const auto& include : options.includePaths)
+        command.set('I', include);
+    for(const auto& define : options.defines)
+        command.set('D', define);
 
-    optionst language_options;
+    Frontend frontend(command, messages);
+    cbmc_invariants_should_throwt invariantsThrow;
+    try
     {
-        // The design's own directory first, so `include "sibling.sv"` works
-        // the way it does for the simulator and for EBMC.
-        std::list<std::string> include_paths;
-        const auto parent = std::filesystem::path(path).parent_path().string();
-        include_paths.push_back(parent.empty() ? "." : parent);
-        for(const auto& include_path : options.includePaths)
-            include_paths.push_back(include_path);
-        language_options.set_option("I", include_paths);
+        const auto trees = frontend.parse();
+        std::map<irep_idt, const verilog_module_sourcet*> sources;
+        const verilog_module_sourcet* source = nullptr;
+        for(const auto& tree : trees)
+        {
+            if(source == nullptr)
+                source = findModule(tree, top);
+            for(const auto& item : tree.items)
+            {
+                if(item.id() == ID_verilog_module)
+                {
+                    const auto& module = to_verilog_module_source(item);
+                    sources.emplace(module.base_name(), &module);
+                }
+            }
+        }
+        if(source == nullptr)
+            throw std::runtime_error("module '" + top + "' not found");
 
-        std::list<std::string> defines(options.defines.begin(), options.defines.end());
-        language_options.set_option("defines", defines);
+        const auto symbols = frontend.elaborate(trees, source->base_name());
+        if(instanceRegs != nullptr)
+        {
+            const auto prefix = rootInstance(id2string(source->base_name())) + ".";
+            for(const auto& [id, symbol] : symbols.symbols)
+            {
+                const auto instance = id2string(id);
+                if(symbol.value.id() != ID_verilog_module_instance ||
+                   instance.compare(0, prefix.size(), prefix) != 0)
+                    continue;
+
+                const auto& target = symbols.lookup_ref(
+                    to_verilog_module_instance(symbol.value).module_identifier());
+                const auto module = sources.find(target.base_name);
+                if(module == sources.end())
+                    continue;  // Interfaces and checkers are not Verilog modules.
+                for(auto& reg : freeRegs(*module->second, symbols, instance))
+                    instanceRegs->push_back({instance.substr(prefix.size()), std::move(reg)});
+            }
+            std::stable_sort(instanceRegs->begin(), instanceRegs->end(),
+                             [](const auto& a, const auto& b) { return a.instance < b.instance; });
+        }
+        return moduleInfo(*source, symbols);
     }
-
-    // language_filest owns the languaget instances and, crucially, typechecks
-    // modules in dependency order across all files.
-    language_filest language_files;
-    // Points into a parse tree owned by language_files; only read before
-    // typecheck() runs.
-    const verilog_module_sourcet* module = nullptr;
-
-    for(const auto& file : designFiles(path, top, options))
+    catch(const ebmc_errort& e)
     {
-        std::ifstream in(file);
-        if(!in)
-        {
-            if(file == path)
-                throw std::runtime_error("cannot open " + path);
-            continue;  // a sibling we cannot read is not fatal
-        }
-
-        auto& language_file = language_files.add_file(file);
-        language_file.filename = file;
-        auto language = std::make_unique<verilog_languaget>();
-        language->set_language_options(language_options, message_handler);
-
-        if(language->parse(in, file, message_handler))
-        {
-            if(file == path)
-                throw std::runtime_error("hw-cbmc failed to parse " + path + ": " +
-                                         readableErrors(message_handler));
-            // A sibling that does not parse is dropped rather than sinking
-            // the whole elaboration.
-            language_files.remove_file(file);
-            continue;
-        }
-
-        if(module == nullptr)
-            module = findModule(language->get_parse_tree(), top);
-
-        language_file.language = std::move(language);
-        language_file.get_modules();
+        if(!e.what().empty())
+            messages.print(1, e.what(), e.location());
+        throw std::runtime_error(messages.errors.empty() ? "hw-cbmc frontend failed"
+                                                         : messages.errors);
     }
-
-    if(module == nullptr)
-        throw std::runtime_error("module '" + top + "' not found");
-
-    ModuleInfo info;
-    info.top = id2string(module->base_name());
-
-    collectFreeRegs(*module, info);
-
-    for(const auto& module_item : module->module_items())
+    catch(const invariant_failedt& e)
     {
-        if(containsAssume(module_item))
-        {
-            info.hasAssume = true;
-            break;
-        }
+        throw std::runtime_error("hw-cbmc frontend invariant failed: " + std::string(e.what()));
     }
-
-    // Elaboration: widths, port normalisation, parameter values. A design
-    // hw-cbmc cannot elaborate still yields the parse-tree view.
-    //
-    // CBMC reports internal invariant violations by ABORTING the process,
-    // which is not acceptable in a library: designs exist (i2c_slave_wbm,
-    // s1196) that trip one during elaboration. cbmc_invariants_should_throwt
-    // flips them to `invariant_failedt` exceptions for the duration, so a
-    // frontend limitation costs us the widths, not the run.
-    symbol_tablet symbol_table;
-    CollectingMessageHandler typecheck_messages;
-    {
-        cbmc_invariants_should_throwt invariants_throw;
-        try
-        {
-            options.elaborated =
-                !language_files.typecheck(symbol_table, typecheck_messages);
-        }
-        catch(const invariant_failedt& e)
-        {
-            options.elaborated = false;
-            options.elaborationError = "hw-cbmc invariant violation: " +
-                                       e.what();
-        }
-        catch(const std::exception& e)
-        {
-            options.elaborated = false;
-            options.elaborationError = e.what();
-        }
-    }
-
-    if(options.elaborated)
-    {
-        fillPortsFromSymbolTable(symbol_table, info.top, info);
-        fillWidthsAndParams(symbol_table, info.top, info);
-    }
-    else
-    {
-        if(options.elaborationError.empty())
-            options.elaborationError = readableErrors(typecheck_messages);
-        fillPortsFromParseTree(*module, info);
-    }
-
-    return info;
-}
-
-ModuleInfo parseModuleFile(const std::string& path, const std::string& top)
-{
-    HwcbmcOptions options;
-    return parseModuleFile(path, top, options);
 }
 
 }  // namespace frontend

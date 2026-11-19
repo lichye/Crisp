@@ -69,15 +69,15 @@ int dumpFrontend(const smart::pipeline::Options& options) {
         std::cerr << "smart: --dump-frontend needs a design file\n";
         return static_cast<int>(smart::pipeline::ExitCode::UserError);
     }
-    const auto& file = options.designFiles().front();
+    const auto& files = options.designFiles();
+    const auto& file = files.front();
     std::string top = options.getString("top");
     if (top.empty()) top = fs::path(file).stem().string();
 
     smart::frontend::HwcbmcOptions frontendOptions;
+    frontendOptions.autoDiscoverSiblings = files.size() == 1;
+    frontendOptions.extraFiles.assign(files.begin() + 1, files.end());
     const auto info = smart::frontend::parseModuleFile(file, top, frontendOptions);
-    if (!frontendOptions.elaborated)
-        std::cerr << "smart: widths unresolved: " << frontendOptions.elaborationError
-                  << "\n";
     std::cout << smart::frontend::dumpJson(info) << "\n";
     return 0;
 }

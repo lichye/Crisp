@@ -30,8 +30,8 @@ int effectiveWidth(int width) { return width > 0 ? width : 1; }
 // A draw of `width` random bits, as a C++ expression.
 std::string randomDraw(int width) {
     const int w = effectiveWidth(width);
-    if (w >= 64) return "((static_cast<QData>(::random()) << 32) ^ ::random())";
-    if (w >= 32) return "static_cast<IData>(::random())";
+    if (w >= 64) return "randomWord()";
+    if (w >= 32) return "(randomWord() & ((QData{1} << " + std::to_string(w) + ") - 1))";
     // ::random() yields 31 usable bits; masking below that is exact.
     return "(::random() & ((1u << " + std::to_string(w) + ") - 1u))";
 }
@@ -375,6 +375,11 @@ std::string renderVerilatorHarness(const frontend::ModuleInfo& info,
        << "    VerilatedVcdC* trace = new VerilatedVcdC;\n"
        << "    if (dump) { top->trace(trace, 99); trace->open(vcdPath.c_str()); }\n"
        << "    ::srandom(seed);\n\n"
+       << "    auto randomWord = [] {\n"
+       << "        const auto lo = static_cast<QData>(::random());\n"
+       << "        const auto mid = static_cast<QData>(::random());\n"
+       << "        return lo | (mid << 31) | (static_cast<QData>(::random() & 3) << 62);\n"
+       << "    };\n\n"
        << "    vluint64_t now = 0;\n";
 
     // anyconst: drawn once, before anything runs. These consume the first

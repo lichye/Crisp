@@ -247,20 +247,23 @@ ExitCode Pipeline::run(RunSummary& summary) {
         inputs.size() > 1 ? inputs : designFilesFor(mainFile, top);
 
 
+    const auto simulatorName = options_.getString("simulator");
+    const bool useVerilator = simulatorName.empty() || simulatorName == "verilator";
+
     // ---- frontend ------------------------------------------------------
     frontend::ModuleInfo info;
+    std::vector<frontend::InstanceFreeReg> instanceRegs;
     frontend::HwcbmcOptions frontendOptions;
     frontendOptions.autoDiscoverSiblings = inputs.size() <= 1;
     for (std::size_t i = 1; i < inputs.size(); ++i)
         frontendOptions.extraFiles.push_back(inputs[i]);
     try {
-        info = frontend::parseModuleFile(mainFile, top, frontendOptions);
+        info = frontend::parseModuleFile(mainFile, top, frontendOptions,
+                                         useVerilator ? &instanceRegs : nullptr);
     } catch (const std::exception& e) {
         std::cerr << "smart: " << e.what() << "\n";
         return ExitCode::UserError;
     }
-    if (!frontendOptions.elaborated)
-        say("warning: widths unresolved (" + frontendOptions.elaborationError + ")");
 
     if (info.ports.empty() && info.freeRegs.empty()) {
         std::cerr << "smart: module '" << top
@@ -339,10 +342,9 @@ ExitCode Pipeline::run(RunSummary& summary) {
     harness.simulationTimeoutSeconds =
         static_cast<int>(options_.getInt("simulation_timeout"));
 
-    const auto simulatorName = options_.getString("simulator");
     if (simulatorName == "iverilog" || simulatorName == "icarus") {
         harness.simulator = simgen::Simulator::Icarus;
-    } else if (simulatorName == "verilator" || simulatorName.empty()) {
+    } else if (useVerilator) {
         harness.simulator = simgen::Simulator::Verilator;
     } else {
         std::cerr << "smart: unknown simulator '" << simulatorName
@@ -350,59 +352,19 @@ ExitCode Pipeline::run(RunSummary& summary) {
         return ExitCode::UserError;
     }
 
-    // `(* anyseq *)` inside an instance is still a free input; the frontend
-    // only reports the top module's, so ask it again per instantiated module
-    // and translate each hit into the flattened path Verilator exposes.
-    // Without this a submodule's free register sits at zero for the whole
-    // trace, which is not "free" and quietly narrows every constraint drawn
-    // from it.
-    if (harness.simulator == simgen::Simulator::Verilator) {
-        const auto instances = simgen::enumerateInstances(designFiles, top,
-                                                          "verilator", work.root());
-        std::map<std::string, frontend::ModuleInfo> perModule;
-        for (const auto& instance : instances) {
-            if (instance.module == top) continue;
-            auto known = perModule.find(instance.module);
-            if (known == perModule.end()) {
-                frontend::ModuleInfo submodule;
-                try {
-                    frontend::HwcbmcOptions subOptions = frontendOptions;
-                    submodule = frontend::parseModuleFile(mainFile, instance.module,
-                                                          subOptions);
-                } catch (const std::exception&) {
-                    // A module we cannot parse simply contributes nothing.
-                }
-                known = perModule.emplace(instance.module, submodule).first;
-            }
-            if (known->second.freeRegs.empty()) continue;
-
-            // hier is dotted (top.genblk1.inst); Verilator flattens it.
-            std::string flat = instance.hierarchy;
-            for (auto& c : flat)
-                if (c == '.') c = '\1';
-            std::string path;
-            std::size_t at = 0;
-            while (at < flat.size()) {
-                const auto next = flat.find('\1', at);
-                if (!path.empty()) path += "__DOT__";
-                path += flat.substr(at, next == std::string::npos ? next : next - at);
-                if (next == std::string::npos) break;
-                at = next + 1;
-            }
-            for (const auto& reg : known->second.freeRegs) {
-                simgen::HierarchicalFreeReg hier;
-                hier.kind = reg.kind;
-                hier.width = reg.width;
-                hier.name = reg.name;
-                hier.flatPath = path + "__DOT__" + reg.name;
-                harness.hierFreeRegs.push_back(hier);
-            }
+    // Use the width of each elaborated instance, including parameter overrides.
+    for (const auto& entry : instanceRegs) {
+        std::string flatPath = top + "__DOT__";
+        for (const char c : entry.instance) {
+            if (c == '.') flatPath += "__DOT__";
+            else flatPath += c;
         }
-        if (!harness.hierFreeRegs.empty())
-            say("[" + timestamp() + "] driving " +
-                std::to_string(harness.hierFreeRegs.size()) +
-                " free registers inside instances");
+        harness.hierFreeRegs.push_back({entry.reg.kind, entry.reg.width,
+                                        flatPath + "__DOT__" + entry.reg.name, entry.reg.name});
     }
+    if (!harness.hierFreeRegs.empty())
+        say("[" + timestamp() + "] driving " +
+            std::to_string(harness.hierFreeRegs.size()) + " free registers inside instances");
 
     const auto policyName = options_.getString("trace_policy");
     if (policyName == "fuzz") {
