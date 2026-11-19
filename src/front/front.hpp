@@ -25,11 +25,13 @@ struct Setting {
 enum class Mode { automatic, bdd, bmc, kind, pdr };
 enum class Level { automatic, word, bit };
 enum class ToolUse { on, off, only };
+enum class Undriven { seq, constant, error };
 enum class Polarity { low, high };
 
 std::string_view spelling(Mode);
 std::string_view spelling(Level);
 std::string_view spelling(ToolUse);
+std::string_view spelling(Undriven);
 
 struct Reset {
     std::string signal;
@@ -56,6 +58,7 @@ struct Task {
     Setting<Mode> mode{Mode::automatic, {}};
     Setting<Level> level{Level::automatic, {}};
     Setting<ToolUse> smart{ToolUse::on, {}}, veval{ToolUse::on, {}};
+    Setting<Undriven> undriven{Undriven::seq, {}};
     std::optional<Setting<std::uint64_t>> depth;
     Setting<std::uint64_t> thread{0, {}}, timeout_seconds{60, {}};
     std::optional<Setting<std::uint64_t>> ram_mib;

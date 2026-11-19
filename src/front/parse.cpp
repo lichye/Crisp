@@ -16,6 +16,7 @@ using detail::Diagnostic;
 namespace fs = std::filesystem;
 using Words = std::vector<std::string>;
 constexpr std::string_view mode_names[]{"auto", "bdd", "bmc", "kind", "pdr"};
+constexpr std::string_view undriven_names[]{"seq", "const", "error"};
 constexpr std::string_view level_names[]{"auto", "word", "bit"};
 constexpr std::string_view tool_names[]{"on", "off", "only"};
 constexpr std::string_view whitespace = " \t\r\n\f\v";
@@ -197,7 +198,8 @@ void read_setting(const SettingLine& line, Task& scope) {
         else if (key == "smart") line.set(scope.smart, choice<ToolUse>(line, tool_names));
         else if (key == "veval") line.set(scope.veval, choice<ToolUse>(line, tool_names));
         else if (key == "depth") line.set(scope.depth, quantity(line));
-        else line.fail("unknown key; expected mode, level, smart, veval, depth");
+        else if (key == "undriven") line.set(scope.undriven, choice<Undriven>(line, undriven_names));
+        else line.fail("unknown key; expected mode, level, smart, veval, depth, undriven");
     } else {
         read_design(line, scope);
     }
@@ -208,6 +210,7 @@ void read_setting(const SettingLine& line, Task& scope) {
 std::string_view spelling(Mode value) { return mode_names[static_cast<std::size_t>(value)]; }
 std::string_view spelling(Level value) { return level_names[static_cast<std::size_t>(value)]; }
 std::string_view spelling(ToolUse value) { return tool_names[static_cast<std::size_t>(value)]; }
+std::string_view spelling(Undriven value) { return undriven_names[static_cast<std::size_t>(value)]; }
 
 detail::Document detail::parse(const fs::path& input, const fs::path& absolute) {
     std::ifstream stream(input, std::ios::binary);

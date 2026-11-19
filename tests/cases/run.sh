@@ -91,4 +91,31 @@ has 'multiply.p_commutes  unknown'
 has 'timeout after 1 s'
 run 2 param
 has 'param WIDTH is not supported' err
-echo 'EBMC cases passed (spec 3, section 4, all 11 cases).'
+for task in hold sequence; do
+    run 0 undriven-value "$task"
+    has 'undriven_value.p_nonzero  proved'
+    has 'crisp: warning: undriven undriven_value.en at ' err
+    has 'undriven-value.sv:2' err
+done
+run 2 undriven-value reject
+has 'crisp: error: undriven undriven_value.en at ' err
+has 'undriven-value.sv:2' err
+has '0 proved, 0 refuted, 0 unknown'
+if grep -Fq 'undriven_value.p_nonzero' out; then
+    cat out err >&2
+    echo 'undriven error started verification' >&2
+    exit 1
+fi
+
+run 0 undriven-temporal hold
+has 'undriven_temporal.p_stable  proved'
+has 'crisp: warning: undriven undriven_temporal.en at ' err
+run 1 undriven-temporal default
+has 'undriven seq'
+has 'undriven_temporal.p_stable  refuted'
+has 'crisp: warning: undriven undriven_temporal.en at ' err
+
+run 0 undriven-clean
+has '3 tasks, 3 proved, 0 refuted, 0 unknown'
+[[ ! -s err ]]
+echo 'EBMC cases passed (Specs 3 and 8).'
