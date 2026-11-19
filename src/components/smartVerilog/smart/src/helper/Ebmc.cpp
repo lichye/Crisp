@@ -2,6 +2,7 @@
 
 #include "Shell.h"
 
+#include <atomic>
 #include <chrono>
 #include <cerrno>
 #include <cstdlib>
@@ -78,6 +79,18 @@ std::string attribute(const std::string& line, const std::string& name)
 
 }  // namespace
 
+const char* statusName(EbmcStatus status)
+{
+    switch (status) {
+    case EbmcStatus::Verified: return "verified";
+    case EbmcStatus::Refuted: return "refuted";
+    case EbmcStatus::Unknown: return "unknown";
+    case EbmcStatus::TimedOut: return "timed-out";
+    case EbmcStatus::Error: return "error";
+    }
+    return "error";
+}
+
 std::string ebmcExecutable()
 {
     if(const auto* overridePath = std::getenv("SMART_EBMC"))
@@ -95,7 +108,7 @@ std::string ebmcCommand(const std::string& designFile, const EbmcOptions& option
     files.insert(files.begin() + options.designFileIndex, designFile);
     for(const auto& file : files)
         command << ' ' << shellQuote(file);
-    command << " -D FORMAL";
+    command << " -D FORMAL --systemverilog";
     if(options.unbounded)
         command << " --k-induction";
     else
@@ -130,7 +143,9 @@ EbmcResult checkProperty(const std::string& designFile, const EbmcOptions& optio
                          const std::string& preferredScope)
 {
     const auto log = designFile + ".ebmc.log";
-    const auto prefix = designFile + ".trace";
+    static std::atomic<unsigned> traceNumber{0};
+    const auto prefix = designFile + ".trace." + std::to_string(getpid()) + "." +
+                        std::to_string(traceNumber.fetch_add(1, std::memory_order_relaxed));
     auto command = "exec " + ebmcCommand(designFile, options) + " --xml-ui";
     if(!trace.empty())
         command += " --vcd " + shellQuote(prefix);
@@ -139,12 +154,15 @@ EbmcResult checkProperty(const std::string& designFile, const EbmcOptions& optio
     if(exitCode == -1)
         return {EbmcStatus::TimedOut, log};
     if(exitCode != 0 && exitCode != 10)
-        return {EbmcStatus::Error, log};
+        return {EbmcStatus::Error, "EBMC exited with status " + std::to_string(exitCode) +
+                                   " (" + log + ")"};
 
     const auto suffix = "." + label;
     const std::string root = "Verilog::$root.";
     std::map<std::string, std::string> refuted;
-    bool found = false;
+    std::size_t found = 0;
+    bool preferredFound = false;
+    const auto preferredName = preferredScope + suffix;
     bool unknown = false;
     std::ifstream results(log);
     for(std::string line; std::getline(results, line);)
@@ -155,14 +173,15 @@ EbmcResult checkProperty(const std::string& designFile, const EbmcOptions& optio
         if(name.rfind(root, 0) != 0 || name.size() <= suffix.size() ||
            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
             continue;
-        found = true;
+        ++found;
+        const auto display = name.substr(root.size());
+        preferredFound = preferredFound || display == preferredName;
         const auto status = attribute(line, "status");
         if(status == "PROVED" ||
            (!options.unbounded && status == "PROVED up to bound " + std::to_string(options.bound)))
             continue;
         if(status == "REFUTED" || status.rfind("REFUTED up to bound ", 0) == 0)
         {
-            const auto display = name.substr(root.size());
             refuted.emplace(display, prefix + "." + display + "_counterexample.vcd");
         }
         else if(status.rfind("UNKNOWN", 0) == 0 || status.rfind("INCONCLUSIVE", 0) == 0)
@@ -171,21 +190,26 @@ EbmcResult checkProperty(const std::string& designFile, const EbmcOptions& optio
             return {EbmcStatus::Error, status + " for " + name + " (" + log + ")"};
     }
 
+    if(found == 0 || results.bad())
+        return {EbmcStatus::Error, "no result for " + label + " (" + log + ")"};
+    if(!preferredScope.empty() && !preferredFound)
+        return {EbmcStatus::Error, "no result for " + preferredName + " (" + log + ")"};
+
     if(!refuted.empty())
     {
-        if(!trace.empty())
-        {
-            const auto preferred = refuted.find(preferredScope + suffix);
-            const auto& from = preferred == refuted.end() ? refuted.begin()->second : preferred->second;
-            std::error_code error;
-            fs::rename(from, trace, error);
-            if(error)
-                return {EbmcStatus::Error, "missing EBMC counterexample " + from + " (" + log + ")"};
-        }
-        return {EbmcStatus::Refuted, {}};
+        if(trace.empty())
+            return {EbmcStatus::Refuted, {}};
+        const auto selected = preferredScope.empty()
+            ? (found == 1 ? refuted.begin() : refuted.end())
+            : refuted.find(preferredName);
+        if(selected == refuted.end())
+            return {EbmcStatus::Refuted, "no counterexample for the mined instance"};
+        std::error_code error;
+        fs::rename(selected->second, trace, error);
+        if(error)
+            return {EbmcStatus::Error, "missing EBMC counterexample " + selected->second + " (" + log + ")"};
+        return {EbmcStatus::Refuted, {}, trace};
     }
-    if(!found || results.bad())
-        return {EbmcStatus::Error, "no result for " + label + " (" + log + ")"};
     if(unknown)
         return {EbmcStatus::Unknown, log};
     std::error_code ignored;

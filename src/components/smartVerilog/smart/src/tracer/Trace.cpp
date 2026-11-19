@@ -1,6 +1,8 @@
 #include "Trace.h"
 #include <string>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 
 std::mutex Trace::VCDFileParserMutex;
 
@@ -11,41 +13,22 @@ Trace::Trace()
     smtPath = "";
 }
 
-Trace::Trace(TraceType ctype, std::string path, std::string root){
-    traceType = ctype;
-    hierarchyRoot = root;
+Trace::Trace(TraceType type, std::string path, std::string root, std::string scope)
+    : traceType(type), hierarchyRoot(std::move(root)), exactScope(std::move(scope))
+{
+    if (type == TraceType::SIM) vcdPath = path;
+    else if (type == TraceType::SMT) smtPath = path;
+    else return;
 
-    //lock the file parser mutex
+    if (path.empty()) return;
+    printDebug("Start to parse the vcd file in: " + path + "\n", 1);
     std::lock_guard<std::mutex> lock(VCDFileParserMutex);
-    if(ctype == TraceType::SIM){
-        vcdPath = path;
-        if(vcdPath != ""){
-            printDebug("Start to parse the vcd file in: "+vcdPath+"\n",1);
-            VCDFileParser vcdParser;
-            VCDFile* vcdFile = vcdParser.parse_file(vcdPath);
-            if(vcdFile == nullptr){
-                printError("VCD file is null, please check the path: "+vcdPath+"\n");
-                return;
-            }
-            readVCDFile(vcdFile);
-            delete vcdFile;
-            printDebug("Trace Gathered Successfully\n",1);
-        }
-    }else if(ctype == TraceType::SMT){ 
-        smtPath = path;
-        if(smtPath != ""){
-            printDebug("Start to parse the vcd file in: "+smtPath+"\n",1);
-            VCDFileParser vcdParser;
-            VCDFile* vcdFile = vcdParser.parse_file(smtPath);  
-            assert(vcdFile != nullptr && "VCD file should not be null");
-            
-            readVCDFile(vcdFile);
-            delete vcdFile;
-            printDebug("Trace Gathered Successfully\n",1);
-        }
-        
-    }
-    
+    VCDFileParser parser;
+    std::unique_ptr<VCDFile> file(parser.parse_file(path));
+    if (!file)
+        throw std::runtime_error("cannot parse trace " + path);
+    readVCDFile(file.get());
+    printDebug("Trace Gathered Successfully\n", 1);
 }
 
 Trace::~Trace(){
@@ -145,7 +128,9 @@ void Trace::readVCDFile(VCDFile* vcdFile){
 
     //loop the signals and the time to make the map
     for(VCDScope* scope : *vcdFile -> get_scopes()){
-        const auto& named = naming.at(scope);
+        const auto found = naming.find(scope);
+        if(found == naming.end()) continue;
+        const auto& named = found->second;
         for(VCDSignal* signal : scope -> signals){
 
             Signal s = createSignal(signal,named.first,named.second);
@@ -182,7 +167,9 @@ void Trace::readVCDFile(VCDFile* vcdFile){
         //Each time, there is a state
         State* state = new State();
         for(VCDScope* scope: *vcdFile->get_scopes()){
-            const auto& named = naming.at(scope);
+            const auto found = naming.find(scope);
+            if(found == naming.end()) continue;
+            const auto& named = found->second;
             for(VCDSignal* signal: scope->signals){
                 Signal s = createSignal(signal,named.first,named.second);
                 VCDValue* val = vcdFile->get_signal_value_at(signal->hash,time);
@@ -222,6 +209,22 @@ void Trace::readVCDFile(VCDFile* vcdFile){
 std::map<const VCDScope*,std::pair<std::string,std::string>>
 Trace::scopeNaming(VCDFile* vcdFile) const {
     std::map<const VCDScope*,std::pair<std::string,std::string>> naming;
+    if (!exactScope.empty()) {
+        const auto suffix = "." + exactScope;
+        for (const auto* scope : *vcdFile->get_scopes()) {
+            std::string path;
+            for (const auto* parent = scope; parent && parent->type != VCD_SCOPE_ROOT;
+                 parent = parent->parent)
+                path = path.empty() ? parent->name : parent->name + "." + path;
+
+            if (path == exactScope || (path.size() > suffix.size() &&
+                path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0))
+                naming.emplace(scope, std::make_pair(exactScope, ""));
+        }
+        if (naming.size() != 1)
+            throw std::runtime_error("expected one trace scope for '" + exactScope + "'");
+        return naming;
+    }
     for(VCDScope* scope : *vcdFile->get_scopes()){
         std::pair<std::string,std::string> named{scope->name, ""};
         if(!hierarchyRoot.empty()){

@@ -26,15 +26,17 @@ struct HwcbmcOptions {
 
 };
 
-struct InstanceFreeReg {
-    std::string instance;  // Dotted path below the top.
-    FreeReg reg;
+struct ElaboratedInstance {
+    std::string path;  // Dotted path below the top.
+    std::string module;
+    std::vector<FreeReg> freeRegs;
 };
 
 // Parse and elaborate the design, reporting errors to the caller.
 ModuleInfo parseModuleFile(const std::string& path, const std::string& top,
                            const HwcbmcOptions& options = {},
-                           std::vector<InstanceFreeReg>* instanceRegs = nullptr);
+                           std::vector<ElaboratedInstance>* instances = nullptr,
+                           std::vector<std::string>* inputs = nullptr);
 
 // Does `path` declare a module called `name`? A cheap textual scan, used to
 // keep a file that redeclares the top module — such as this tool's own

@@ -23,6 +23,7 @@ namespace fs = std::filesystem;
 #include <sys/file.h>  
 #include <sys/types.h>
 #include "Options.h"
+#include "BlockRunner.h"
 
 //global variables
 int latency = 0;
@@ -71,7 +72,7 @@ int runSmartBlock(int argc, char* argv[]){
   // an old caller (or a hand-run smart.out) still works unchanged.
   if(argc<8){
     print("Usage: smart.out <currentDir> <topmodule> <result_file> <variables_file> <core_id> <latency> <config> [mine_module] [inject_module]\n");
-    return -1;
+    return static_cast<int>(BlockExit::Error);
   }
   else{
     currentDir = argv[1];
@@ -97,11 +98,11 @@ int runSmartBlock(int argc, char* argv[]){
   }
   catch(const std::exception& e){
     print(std::string("Error: ")+e.what());
-    return -1;
+    return static_cast<int>(BlockExit::Error);
   }
   if(options.getString("assumption_mining") != "off"){
     print("Error: assumption_mining=suggest is reserved; the backend is not implemented yet");
-    return -1;
+    return static_cast<int>(BlockExit::Error);
   }
   // A block's output goes to its own log file, so the old default verbosity
   // is what makes that log worth reading.
@@ -132,7 +133,7 @@ int runSmartBlock(int argc, char* argv[]){
     verilogSrcPath = smart::emit::fileDeclaringModule(candidates, injectModule);
     if(verilogSrcPath.empty()){
       std::cerr << "Cannot find the source declaring module " << injectModule << "\n";
-      return 2;
+      return static_cast<int>(BlockExit::Error);
     }
   }
   smt_path = currentDir + "/runtime/smt_results/"+core_id;
@@ -187,9 +188,9 @@ int runSmartBlock(int argc, char* argv[]){
 
   //Add random negative states
   for(int i=0;i<negativeStateNumber;i++){
-    State* negativeState = createNegativeState();
-    sygus->addConstraints(negativeState,false);
-    delete negativeState;
+    std::unique_ptr<State> negativeState(createNegativeState());
+    if (negativeState)
+      sygus->addConstraints(negativeState.get(), false);
   }
 
   if(latency == 0){
@@ -206,20 +207,20 @@ int runSmartBlock(int argc, char* argv[]){
   using helper::EbmcStatus;
   const auto scope = mineModule == moduleName || mineModule.rfind(moduleName + ".", 0) == 0
       ? mineModule : moduleName + "." + mineModule;
-  auto status = checker->checkExprSafety(sygusfunc, SMTVCDfilePath, scope);
-  print("\tIts correctness is: " + std::to_string(status == EbmcStatus::Verified));
+  auto checked = checker->checkExprSafety(sygusfunc, SMTVCDfilePath, scope);
+  print("\tEBMC result: " + std::string(helper::statusName(checked.status)) + "\n");
 
   int timeOut = 0;
   int mostRun = signals->size();
 
-  while(status == EbmcStatus::Refuted && RefinementSet){
+  while(!checked.counterexample.empty() && RefinementSet){
     if(timeOut++>mostRun||timeOut>refinementDepth){
       print("Time out\n");
       break;
     }
-    print("In looptime "+std::to_string(timeOut)+": using EBMC counterexample "+SMTVCDfilePath+"\n");
-    module->addTrace(SMT,SMTVCDfilePath);
-    Constrains c = module->getConstrain(SMTVCDfilePath,signals);
+    print("In looptime "+std::to_string(timeOut)+": using EBMC counterexample "+checked.counterexample+"\n");
+    module->addTrace(SMT, checked.counterexample);
+    Constrains c = module->getConstrain(checked.counterexample, signals);
     Constrains new_c = checker->fixupConstrains(c);
     sygus->addConstraints(new_c.constraints,c.isTrue);
     sygus->addConstraintComments("Getting constraints from the trace :\t"+c.tracePath,c.isTrue);
@@ -234,26 +235,34 @@ int runSmartBlock(int argc, char* argv[]){
     print("\tGet assertion:" + sygusfunc->getBodyVerilogExpr());
 
     SMTVCDfilePath = generateSMTResultPath();
-    status = checker->checkExprSafety(sygusfunc, SMTVCDfilePath, scope);
-    print("\tIts correctness is: " + std::to_string(status == EbmcStatus::Verified));
+    checked = checker->checkExprSafety(sygusfunc, SMTVCDfilePath, scope);
+    print("\tEBMC result: " + std::string(helper::statusName(checked.status)) + "\n");
     printDebug("\tTrace goes to VCD file: "+SMTVCDfilePath,1);
 
   }
-  if(status == EbmcStatus::Verified){
+  if(checked.status == EbmcStatus::Verified){
     writeStringToFile(resultFileDir,sygusfunc->getBodyVerilogExpr(),std::ios::out);
     writeStringToFile("runtime/SygusResult.sl",Cvc5result,std::ios::app);
     writeStringToFile("runtime/CompareResult.txt",sygusfunc->getBodyVerilogExpr()+":\n"+Cvc5result+"\n",std::ios::app);
     print("Last assertion "+sygusfunc->getBodyVerilogExpr()+" is verified and written to "+resultFileDir);
   }
   else{
-    print("All assertion is not verified\n");
+    if (!checked.detail.empty())
+      print(checked.detail + "\n");
   }
 
-  //append_with_lock_posix("log.txt","This loop's Result: "+std::to_string(status == EbmcStatus::Verified)+"\n"+timer->printTime()+"\n");
-  writeStringToFile("log.txt","This "+core_id+" 's Result: "+std::to_string(status == EbmcStatus::Verified)+"\n"+timer->printTime()+"\n",std::ios::out|std::ios::app);
+  writeStringToFile("log.txt", "Block " + core_id + ": " + helper::statusName(checked.status) +
+                    "\n" + timer->printTime() + "\n", std::ios::out | std::ios::app);
   delete sygusfunc;
   fs::remove_all(smt_path);
-  return status == EbmcStatus::Verified ? 0 : 1;
+  switch (checked.status) {
+  case EbmcStatus::Verified: return static_cast<int>(BlockExit::Verified);
+  case EbmcStatus::Refuted: return static_cast<int>(BlockExit::Refuted);
+  case EbmcStatus::Unknown: return static_cast<int>(BlockExit::Unknown);
+  case EbmcStatus::TimedOut: return static_cast<int>(BlockExit::TimedOut);
+  case EbmcStatus::Error: return static_cast<int>(BlockExit::Error);
+  }
+  return static_cast<int>(BlockExit::Error);
 }
 }}  // namespace smart::pipeline
 
@@ -369,7 +378,7 @@ SygusFunction* parseSygusFunction(const std::string& sygusPath,SyGuSGenerater* s
       timer->stop(CVC5_Timer);
       writeStringToFile("log.txt","This "+core_id+" 's Result: -1(Sygus infeasible)\n"+timer->printTime()+"\n",std::ios::out|std::ios::app);
       fs::remove_all(smt_path);
-      exit(-1);
+      exit(static_cast<int>(smart::pipeline::BlockExit::NoAssertion));
   }
   return sygusfunc;
 }
@@ -383,15 +392,10 @@ void printCoreSignals(std::vector<Signal>* signals){
 }
 
 State* createNegativeState(){
-  State* negativeState = stateMaker->makeRandomState();
-  int loopTime = 0;
-  while(checker->checkStateReachability(negativeState)){
-    sygus->addConstraintComments("Getting constraints from the random state",true);
-    delete negativeState;
-    negativeState = stateMaker->makeRandomState();
-    if(loopTime++>3){
-      break;
-    }
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    std::unique_ptr<State> state(stateMaker->makeRandomState());
+    if (!checker->checkStateReachability(state.get()))
+      return state.release();
   }
-  return negativeState;
+  return nullptr;
 }

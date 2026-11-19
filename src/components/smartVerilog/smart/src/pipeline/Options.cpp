@@ -33,7 +33,7 @@ std::vector<OptionSpec> buildTable() {
         {"discover_siblings", "discover-siblings", 0, T::Bool, true, "", "",
          "look for sibling Verilog files when given a single input"},
         {"top", "top", 0, T::String, std::string(""), "", "NAME",
-         "top module name (default: file stem)"},
+         "top module name (default: the sole uninstantiated module)"},
         // Which module the invariants are about. The design is still
         // elaborated and checked from `top`; this selects whose signals become
         // candidates and whose body the assertions are written into, so a

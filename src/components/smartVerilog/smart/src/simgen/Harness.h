@@ -60,16 +60,6 @@ struct StateSignal {
 // which elaborates without compiling. Returns an empty vector if verilator
 // cannot be run or the XML cannot be read — the caller then falls back to the
 // ports it already knows.
-// Map an instance name to the module that defines it, via
-// `verilator --xml-only`'s cell list. A VCD scope is an INSTANCE (DFF_0),
-// while a property is written into a module DEFINITION (dff), and the two are
-// spelled differently. Returns an empty string when the name is not an
-// instance — in which case it is already a module name.
-std::string definingModule(const std::vector<std::string>& designFiles,
-                           const std::string& top, const std::string& instance,
-                           const std::string& verilator,
-                           const std::string& scratchDir);
-
 std::vector<StateSignal> enumerateStateSignals(
     const std::vector<std::string>& designFiles, const std::string& top,
     const std::string& verilator, const std::string& scratchDir);
@@ -80,16 +70,15 @@ std::vector<StateSignal> enumerateStateSignals(
 struct HierarchicalFreeReg {
     std::string kind;      // "anyseq" | "anyconst"
     int width = 1;
-    std::string flatPath;  // <top>__DOT__<instance>__DOT__<name>
+    std::string flatPath;  // resolved Verilator member name
     std::string name;      // local name, for looking up an input spec
+    std::string instance;  // Verilog path from the top, before Verilator's encoding
 };
 
-// Instances in the design, as `verilator --xml-only` reports them: the
-// hierarchical path (i2c_master_axil.genblk1.cmd_fifo_inst) and the module it
-// is an instance of, with Verilator's parameter-specialisation suffix removed.
+// Paths in Verilator's XML and their Verilog spellings.
 struct Instance {
     std::string hierarchy;
-    std::string module;
+    std::string verilogHierarchy;  // generate indices spelled as [n]
 };
 std::vector<Instance> enumerateInstances(
     const std::vector<std::string>& designFiles, const std::string& top,

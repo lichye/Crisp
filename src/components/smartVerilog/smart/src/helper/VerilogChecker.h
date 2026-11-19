@@ -51,7 +51,7 @@ class VerilogChecker {
         
         //The check function will return true if the state is reachable
         bool checkStateReachability(State*);
-        smart::helper::EbmcStatus checkExprSafety(SygusFunction*, const std::string& tracePath,
+        smart::helper::EbmcResult checkExprSafety(SygusFunction*, const std::string& tracePath,
                                                   const std::string& scope);
         void setDesignFiles(const std::vector<std::string>& files);
         void setBound(int);
@@ -99,7 +99,7 @@ class VerilogChecker {
         void deleteVerilogFile();
         std::string propertyLabel;
         std::size_t designFileIndex = 0;
-        smart::helper::EbmcStatus runEBMC(const std::string& trace = {},
+        smart::helper::EbmcResult runEBMC(const std::string& trace = {},
                                          const std::string& scope = {});
         bool runSby();
 

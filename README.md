@@ -33,8 +33,13 @@ prints the tools it will use.
 Adding `smart on` explicitly under `[options]` runs the miner before checking
 the original properties. SMART writes the checked assertions to
 `crisp-out/<salt-name>[_<task>]/smart_assertion.sv`. Crisp then checks the
-original design with its original assumptions. Tasks that use
-`[design] include` or `define` can continue to run with `smart off`.
+original design with its original assumptions. When `top` is omitted, SMART
+uses EBMC's sole uninstantiated module. Set `top` explicitly if several
+modules qualify. Tasks that use `[design] include` or `define` can continue
+to run with `smart off`.
+
+Run `make test-smart` with Verilator, Icarus, and Python 3 on `PATH` to check
+the SMART integration.
 
 ## Build from source
 

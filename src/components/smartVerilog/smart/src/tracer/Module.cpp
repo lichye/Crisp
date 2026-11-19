@@ -23,8 +23,10 @@ void Module::addTrace(TraceType traceType,std::string input_tracePath){
     }
     // The mined scope is the hierarchy root, so a submodule's signals arrive
     // already named by the instance path that reaches them from it.
+    const bool selectedInstance = moduleName.find('.') != std::string::npos;
     Trace* trace = new Trace(traceType,input_tracePath,
-                             hierarchical ? moduleName : std::string());
+                             hierarchical ? moduleName : std::string(),
+                             selectedInstance ? moduleName : std::string());
     traces.push_back(trace);
     tracePaths.push_back(input_tracePath);
 }
@@ -36,7 +38,8 @@ void Module::addTracesfromDir(TraceType traceType, std::string dirPath){
 }
 
 std::vector<Signal>* Module::getAllSignals(){
-    assert(!traces.empty());
+    if (traces.empty())
+        throw std::runtime_error("no traces for '" + moduleName + "'");
     return traces[0]->getAllSignals(moduleName);
 }
 

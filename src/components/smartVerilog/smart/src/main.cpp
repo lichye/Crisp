@@ -61,8 +61,7 @@ int dumpFrontend(const smart::pipeline::Options& options) {
     }
     const auto& files = options.designFiles();
     const auto& file = files.front();
-    std::string top = options.getString("top");
-    if (top.empty()) top = fs::path(file).stem().string();
+    const auto top = options.getString("top");
 
     smart::frontend::HwcbmcOptions frontendOptions;
     frontendOptions.autoDiscoverSiblings =
@@ -88,7 +87,7 @@ int main(int argc, char* argv[]) {
             return runSmartBlock(static_cast<int>(blockArgv.size()), blockArgv.data());
         } catch (const std::exception& e) {
             std::cerr << "smart: " << e.what() << "\n";
-            return static_cast<int>(ExitCode::Failure);
+            return static_cast<int>(BlockExit::Error);
         }
     }
 

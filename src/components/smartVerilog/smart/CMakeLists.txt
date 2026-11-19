@@ -136,3 +136,10 @@ target_link_libraries(smart PRIVATE
 # The product sits at the top of the build tree, not among the dev tools.
 set_target_properties(smart PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+# Optional integration regression, built by Crisp's test-smart target.
+add_executable(test_smart_ebmc EXCLUDE_FROM_ALL
+    ${CMAKE_SOURCE_DIR}/../../../tests/smart/check-ebmc.cpp)
+target_link_libraries(test_smart_ebmc PRIVATE smart_core smart_emit)
+set_target_properties(test_smart_ebmc PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})

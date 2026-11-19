@@ -318,9 +318,28 @@ SimResult runSimulations(const frontend::ModuleInfo& info,
             // elaborates without compiling; on failure the harness falls back
             // to outputs and free registers.
             HarnessOptions withState = options;
+            if (!withState.hierFreeRegs.empty()) {
+                const auto instances = enumerateInstances(strippedFiles, info.top, options.verilator, workDir);
+                std::map<std::string, std::string> flattened;
+                for (const auto& instance : instances) {
+                    std::string path;
+                    for (char c : instance.hierarchy) {
+                        if (c == '.') path += "__DOT__";
+                        else path += c;
+                    }
+                    flattened.emplace(instance.verilogHierarchy, std::move(path));
+                }
+                for (auto& reg : withState.hierFreeRegs) {
+                    const auto found = flattened.find(info.top + "." + reg.instance);
+                    if (found == flattened.end())
+                        throw std::runtime_error("Verilator did not elaborate free register instance '" +
+                                                 info.top + "." + reg.instance + "'");
+                    reg.flatPath = found->second + "__DOT__" + reg.name;
+                }
+            }
             if (withState.stateSignals.empty())
                 withState.stateSignals = enumerateStateSignals(
-                    designFiles, info.top, options.verilator, workDir);
+                    strippedFiles, info.top, options.verilator, workDir);
 
             std::ofstream out(harnessPath);
             if (!out) throw std::runtime_error("cannot write " + harnessPath.string());
