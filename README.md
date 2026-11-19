@@ -23,6 +23,19 @@ The optional `components.tar.gz` beside the binary supplies SMART, veval, SBY, t
 
 For `verify`, `--split on|off` controls module decomposition and `--lemmas on|off` controls mining. Both default to `on` for this command. A reported proof is scoped to the selected module and its recorded premises.
 
+### SMART with a .salt task
+
+Run `make smart` to build SMART against Crisp's hw-cbmc submodule and install
+the pinned cvc5 package. Put Verilator on `PATH`, or run `make deps` to install
+the external simulator suite. `src/components/smartVerilog/build/smart --check-env`
+prints the tools it will use.
+
+Adding `smart on` explicitly under `[options]` runs the miner before checking
+the original properties. SMART writes the checked assertions to
+`crisp-out/<salt-name>[_<task>]/smart_assertion.sv`. Crisp then checks the
+original design with its original assumptions. Tasks that use
+`[design] include` or `define` can continue to run with `smart off`.
+
 ## Build from source
 
 To build only the standalone checker, install a C++17 compiler, GNU Make, Flex, Bison, Git, curl and patch. The build fetches pinned engine sources into a private build cache.

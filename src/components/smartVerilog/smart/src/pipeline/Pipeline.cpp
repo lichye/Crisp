@@ -244,8 +244,8 @@ ExitCode Pipeline::run(RunSummary& summary) {
     // the latter, and only the design knows the mapping.
     std::string injectModule = mineModule;
 
-    std::vector<std::string> designFiles =
-        inputs.size() > 1 ? inputs : designFilesFor(mainFile, top);
+    const bool discoverSiblings = inputs.size() == 1 && options_.getBool("discover_siblings");
+    const auto designFiles = discoverSiblings ? designFilesFor(mainFile, top) : inputs;
 
 
     const auto simulatorName = options_.getString("simulator");
@@ -255,7 +255,7 @@ ExitCode Pipeline::run(RunSummary& summary) {
     frontend::ModuleInfo info;
     std::vector<frontend::InstanceFreeReg> instanceRegs;
     frontend::HwcbmcOptions frontendOptions;
-    frontendOptions.autoDiscoverSiblings = inputs.size() <= 1;
+    frontendOptions.autoDiscoverSiblings = discoverSiblings;
     for (std::size_t i = 1; i < inputs.size(); ++i)
         frontendOptions.extraFiles.push_back(inputs[i]);
     try {

@@ -13,7 +13,13 @@ SMART's upstream citation is Leiqi Ye, Yixuan Li, Guy Frankel, Jianyi Cheng and 
 
 ## Third-party software
 
-EBMC is the hardware model checker from **hw-cbmc**. SMART invokes it as an external executable and links the Verilog frontend from hw-cbmc revision `9b402aa7cfb1157b0399f9e684bdfc1b505ed50d` with CBMC revision `3c915ebe35448a20555c1ef55d51540b52c5c34a`. SMART's local frontend compatibility patch is retained with its build scripts. [Upstream hw-cbmc](https://github.com/diffblue/hw-cbmc) · [Patch notes](smartVerilog/tools/patches/hw-cbmc/README.md)
+SMART links the Verilog frontend and runs the EBMC executable from Crisp's
+`src/components/hw-cbmc` gitlink. The fork already contains the attribute
+retention fix used by SMART. [EBMC fork](https://github.com/lichye/ebmc)
+
+SMART uses cvc5 1.4.2. Crisp's installer pins the official Linux x86-64 static
+package and its SHA-256 hash. The package supplies the C++ API, parser, CLI
+and MPFR. [cvc5 release](https://github.com/cvc5/cvc5/releases/tag/cvc5-1.4.2)
 
 veval carries selected frontend and symbolic-evaluation sources from hw-cbmc `1a4ffdbffae877b7a7c1bf908de82ed07eafc858` and expression libraries from CBMC `7483d0de40b2f39850f4f5ba5dd9c6e38f959e31`. The imported files retain their author notices and licence texts. [Import history](veval/src/frontend/rtl/HwCbmcProvenance.md) · [hw-cbmc licence](veval/src/frontend/hw_cbmc/LICENSE) · [CBMC licence](veval/src/util/cbmc/LICENSE)
 
@@ -24,4 +30,4 @@ Computer Science Department, Carnegie Mellon University.
 
 Other external tools used in this example are cvc5 for synthesis, Icarus Verilog for simulation, Spot for property translation, and Yosys, SymbiYosys and ABC for module checking.
 
-The single-file Crisp executable links the property-checking and SystemVerilog frontend APIs from the maintained EBMC fork at `90b8c17890052551f36480e5a2301b62a91e8dc4` and its CBMC submodule at `f17df18eaf4a84e7ab7b4e8f60bac1685ad05045`. Its compiled-in engine checks properties with the BDD method. The optional workflow runtime uses the SBY fork at `b21f778333efc1e7c33fe22b56d43f87e4f759d4` and retains the EBMC version required by SMART. The release records the Yosys and solver versions used to build the bundle. [EBMC fork](https://github.com/lichye/ebmc) · [SBY fork](https://github.com/lichye/sby)
+The single-file Crisp executable links the property-checking and SystemVerilog frontend APIs from the maintained EBMC fork at `90b8c17890052551f36480e5a2301b62a91e8dc4` and its CBMC submodule at `f17df18eaf4a84e7ab7b4e8f60bac1685ad05045`. Its compiled-in engine checks properties with the BDD method. The optional workflow runtime uses the SBY fork at `b21f778333efc1e7c33fe22b56d43f87e4f759d4` and the shared EBMC executable used by SMART. The release records the Yosys and solver versions used to build the bundle. [EBMC fork](https://github.com/lichye/ebmc) · [SBY fork](https://github.com/lichye/sby)

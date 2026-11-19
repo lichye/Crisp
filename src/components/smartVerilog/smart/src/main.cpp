@@ -65,7 +65,8 @@ int dumpFrontend(const smart::pipeline::Options& options) {
     if (top.empty()) top = fs::path(file).stem().string();
 
     smart::frontend::HwcbmcOptions frontendOptions;
-    frontendOptions.autoDiscoverSiblings = files.size() == 1;
+    frontendOptions.autoDiscoverSiblings =
+        files.size() == 1 && options.getBool("discover_siblings");
     frontendOptions.extraFiles.assign(files.begin() + 1, files.end());
     const auto info = smart::frontend::parseModuleFile(file, top, frontendOptions);
     std::cout << smart::frontend::dumpJson(info) << "\n";

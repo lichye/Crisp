@@ -30,6 +30,8 @@ std::vector<OptionSpec> buildTable() {
     using T = OptionType;
     std::vector<OptionSpec> table = {
         // --- input / output --------------------------------------------
+        {"discover_siblings", "discover-siblings", 0, T::Bool, true, "", "",
+         "look for sibling Verilog files when given a single input"},
         {"top", "top", 0, T::String, std::string(""), "", "NAME",
          "top module name (default: file stem)"},
         // Which module the invariants are about. The design is still
