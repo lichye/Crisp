@@ -4,8 +4,8 @@ Crisp imports the production source from two local Git revisions. Each snapshot 
 
 | Component in Crisp | Source revision | Contribution |
 |---|---|---|
-| `components/smartVerilog/` | `smartVerilog` · `81739ba7394e9a65d47427970287e61185c12d9b` | SMART assertion mining and MAPminer's parallel block synthesis and MSA selection |
-| `components/veval/` | `veval` · `355d529a43913cdf94ab694050fb1cf438b43a2d` | SpecLadder property lowering, module-local proof obligations and checking |
+| `src/components/smartVerilog/` | `smartVerilog` · `81739ba7394e9a65d47427970287e61185c12d9b` | SMART assertion mining and MAPminer's parallel block synthesis and MSA selection |
+| `src/components/veval/` | `veval` · `355d529a43913cdf94ab694050fb1cf438b43a2d` | SpecLadder property lowering, module-local proof obligations and checking |
 
 The import selects the runtime sources and build inputs. Crisp's CMake files build the component binaries and runtime helpers. SMART can link a prebuilt hw-cbmc installation read-only and locate its EBMC executable. The source repositories retain their research corpora, evaluation scripts and experiment history.
 

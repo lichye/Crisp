@@ -4,11 +4,11 @@
 /docs/
 /crisp-out/
 /log/
-/components/smartVerilog/.deps
-/components/smartVerilog/otherTools
-/components/smartVerilog/build
-/components/veval/build
-/components/veval/experiment/
+/src/components/smartVerilog/.deps
+/src/components/smartVerilog/otherTools
+/src/components/smartVerilog/build
+/src/components/veval/build
+/src/components/veval/experiment/
 smart-work-*/
 *_assertion.sv
 __pycache__/

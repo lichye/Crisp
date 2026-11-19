@@ -23,7 +23,7 @@ int main(int argc, char** argv) {
         options.top = "token_formal";
         options.design = {root / "examples/token/rtl/token.sv"};
         options.spec = root / "examples/token/spec.sv";
-        const Tools tools{root / "components/veval/build/veval", {}};
+        const Tools tools{root / "src/components/veval/build/veval", {}};
         auto falseCandidate = [](const auto&, const auto&, const auto&, const auto&, auto&) {
             return MiningResult{"success", {"left"}};
         };

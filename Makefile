@@ -1,7 +1,7 @@
 JOBS ?= 4
 CMAKE ?= cmake
-SMART := components/smartVerilog
-VEVAL := components/veval
+SMART := src/components/smartVerilog
+VEVAL := src/components/veval
 HWCBMC := src/components/hw-cbmc
 CBMC := $(HWCBMC)/lib/cbmc
 VERSION := 0.1.0
