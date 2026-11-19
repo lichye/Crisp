@@ -1,0 +1,12 @@
+[tasks]
+hold
+default
+
+[options]
+mode bdd
+smart off
+veval off
+hold: undriven const
+
+[files]
+undriven-temporal.sv

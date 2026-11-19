@@ -115,14 +115,22 @@ struct Property {
     std::string name, status, detail;
 };
 
-std::vector<Property> read_properties(const std::string& events) {
+struct TaskEvents {
     std::vector<Property> properties;
+    std::vector<std::string> undriven;
+};
+
+TaskEvents read_events(const std::string& events) {
+    TaskEvents result;
+    auto& properties = result.properties;
     std::istringstream input(events);
     std::size_t index;
     std::string status, detail;
     // A killed worker may have written only part of its final record.
     while (input >> index >> status >> std::quoted(detail) && input.get() == '\n') {
-        if (status == "pending" && index == properties.size())
+        if (status == "undriven")
+            result.undriven.push_back(detail);
+        else if (status == "pending" && index == properties.size())
             properties.push_back({detail, status, {}});
         else {
             auto& property = properties.at(index);
@@ -130,7 +138,7 @@ std::vector<Property> read_properties(const std::string& events) {
             property.detail = detail;
         }
     }
-    return properties;
+    return result;
 }
 
 fs::path wave_path(const front::Task& task, const std::string& name) {
@@ -222,7 +230,9 @@ void run(const front::Task& task, Summary& summary) {
     pipe.drain(events);
     if (!wait.error.empty()) throw std::runtime_error(wait.error);
     const bool failed = !wait.timedOut && (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0);
-    auto properties = read_properties(events);
+    auto reports = read_events(events);
+    for (const auto& warning : reports.undriven) std::cerr << "crisp: warning: " << warning << '\n';
+    auto& properties = reports.properties;
     const auto timeout = "timeout after " + std::to_string(seconds) + " s";
     bool diagnostics = failed;
     if (failed) {
