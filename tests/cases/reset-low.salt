@@ -1,0 +1,17 @@
+[tasks]
+bmc
+kind
+pdr
+
+[files]
+reset-low.sv
+
+[design]
+reset rst_n low
+
+[options]
+bmc: mode bmc
+bmc: depth 3
+kind: mode kind
+kind: depth 3
+pdr: mode pdr

@@ -1,0 +1,32 @@
+[tasks]
+register
+wire
+output
+inout
+wide
+missing
+missing_default
+valid
+
+[files]
+reset-invalid.sv
+
+[design]
+reset busy low
+register: top top
+wire: top top
+wire: reset internal low
+output: top top
+output: reset outgoing low
+inout: top top
+inout: reset bidir low
+wide: top top
+wide: reset wide low
+missing: top top
+missing: reset absent low
+missing_default: reset absent low
+valid: reset rst_n low
+
+[options]
+mode bmc
+depth 3

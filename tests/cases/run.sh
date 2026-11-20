@@ -78,6 +78,62 @@ run 1 reset without_reset
 has 'reset_counter.p_range  refuted'
 valid_vcd crisp-out/reset_without_reset/reset_counter.p_range.vcd
 
+for mode in bmc kind pdr; do
+    run 1 reset-low "$mode"
+    has 'top.p  refuted'
+    wave="crisp-out/reset-low_$mode/top.p.vcd"
+    valid_vcd "$wave"
+    grep -Fxq '#2' "$wave"
+    if grep -Fxq '#3' "$wave"; then
+        echo "reset-low $mode: expected the first failure at cycle 2" >&2
+        cat "$wave" >&2
+        exit 1
+    fi
+done
+run 0 reset-high bmc
+has 'top.p  passed'
+for mode in kind pdr; do
+    run 0 reset-high "$mode"
+    has 'top.p  proved'
+done
+
+invalid="$root/tests/cases/reset-invalid.salt"
+rejected_reset() {
+    local task=$1 line=$2 message=$3
+    run 2 reset-invalid "$task"
+    has "$invalid:$line: $message" err
+    [[ $(wc -l < err) == 1 ]]
+    has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
+}
+rejected_reset register 15 "reset 'busy' is a register, not an input of top"
+rejected_reset wire 18 "reset 'internal' is an internal signal, not an input of top"
+rejected_reset output 20 "reset 'outgoing' is an output port, not an input of top"
+rejected_reset inout 22 "reset 'bidir' is an inout port, not an input of top"
+rejected_reset wide 24 "reset 'wide' is a 2-bit input of top; expected a 1-bit input"
+rejected_reset missing 26 "reset 'absent' does not exist in top"
+rejected_reset missing_default 27 "reset 'absent' does not exist in any top-level module"
+run 2 reset-invalid register valid
+has "$invalid:15: reset 'busy' is a register" err
+has '2 tasks, 0 proved, 0 passed, 1 refuted, 0 unknown'
+
+# An explicit SMART run also gets the source-located error before it can
+# consume the invalid reset, even if no SMART executable is installed.
+printf '[files]\n%s\n[design]\nreset busy low\n[options]\nsmart on\n' "$root/tests/cases/reset-invalid.sv" > smart-reset.salt
+status=0
+CRISP_SMART="$work/missing-smart" "$root/build/crisp" smart-reset.salt >out 2>err || status=$?
+[[ $status == 2 && $(wc -l < err) == 1 ]]
+has "smart-reset.salt:4: reset 'busy' is a register" err
+has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
+
+for name in 'u_core.rst' 'rst==0'; do
+    printf '[files]\n%s\n[design]\nreset %s low\n' "$root/tests/cases/reset-high.sv" "$name" > invalid-name.salt
+    status=0
+    "$root/build/crisp" invalid-name.salt >out 2>err || status=$?
+    [[ $status == 2 && $(wc -l < err) == 1 && ! -s out ]]
+    has 'invalid-name.salt:4:' err
+    has "invalid name '$name'" err
+done
+
 run 3 token prove induction
 has 'token_formal.p_no_conflict  proved'
 has 'token_formal.p_no_conflict  unknown'
@@ -152,4 +208,4 @@ has 'crisp: warning: undriven undriven_temporal.en at ' err
 run 0 undriven-clean
 has '3 tasks, 3 proved, 0 passed, 0 refuted, 0 unknown'
 [[ ! -s err ]]
-echo 'EBMC cases passed (Specs 3, 8, and 11).'
+echo 'EBMC cases passed (Specs 3, 8, 11, and 18).'

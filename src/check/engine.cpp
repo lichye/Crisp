@@ -5,12 +5,17 @@
 #include <ebmc/format_hooks.h>
 #include <ebmc/property_checker.h>
 #include <langapi/mode.h>
+#include <util/arith_tools.h>
 #include <util/config.h>
 #include <util/exception_utils.h>
 #include <util/ui_message.h>
-#include <verilog/verilog_language.h>
+#include <verilog/verilog_bits.h>
 #include <verilog/verilog_ebmc_language.h>
+#include <verilog/verilog_language.h>
+#include <verilog/verilog_typecheck_base.h>
+#include <verilog/verilog_types.h>
 
+#include <algorithm>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -35,8 +40,6 @@ cmdlinet command_line(const front::Task& task) {
         args.insert(args.end(), {"-D", define.name + (define.value ? "=" + *define.value : "")});
     }
     if (task.top) args.insert(args.end(), {"--top", task.top->value});
-    if (task.reset && task.top)
-        args.insert(args.end(), {"--reset", reset_expression(task.reset->value, task.top->value)});
     switch (task.mode.value) {
     case Mode::automatic:
     case Mode::bdd: args.push_back("--bdd"); break;
@@ -55,7 +58,7 @@ cmdlinet command_line(const front::Task& task) {
     for (const auto& arg : args) argv.push_back(arg.c_str());
     cmdlinet cmd;
     if (cmd.parse(argv.size(), argv.data(),
-                  "I:D:(systemverilog)(top):(reset):(bdd)(new-ic3)(bound):(k-induction)(aig)(undriven):") ||
+                  "I:D:(systemverilog)(top):(bdd)(new-ic3)(bound):(k-induction)(aig)(undriven):") ||
         config.set(cmd))
         throw std::runtime_error("EBMC rejected the task options");
     // In this fork --aig takes precedence over --k-induction and dispatches
@@ -69,26 +72,58 @@ bool refuted(const Property& p) {
     return p.is_refuted() || p.status == Property::statust::REFUTED_WITH_BOUND;
 }
 
-// EBMC resolves --reset from $root. When top was omitted, let EBMC
-// elaborate its default hierarchy first, then use the same reset handler.
+[[noreturn]] void reset_error(const front::Setting<front::Reset>& reset, const std::string& detail) {
+    const auto& source = reset.source.value();
+    throw std::runtime_error("crisp: " + source.file.string() + ":" + std::to_string(source.line) +
+                             ": reset '" + reset.value.signal + "' " + detail);
+}
+
 class Verilog : public verilog_ebmc_languaget {
 public:
     using verilog_ebmc_languaget::verilog_ebmc_languaget;
-    void reset_in_default_top(const front::Reset& reset, transition_systemt& system) {
+    void apply_reset(const front::Task& task, transition_systemt& system) {
+        const auto& reset = *task.reset;
+        const auto& name = reset.value.signal;
         const auto prefix = id2string(system.main_symbol->name) + ".";
-        std::string top;
-        for (const auto& entry : system.symbol_table.symbols) {
-            const auto& symbol = entry.second;
-            if (symbol.type.id() != ID_verilog_module_instance ||
-                id2string(symbol.name) != prefix + id2string(symbol.base_name) ||
-                !system.symbol_table.lookup(id2string(symbol.name) + "." + reset.signal))
-                continue;
-            if (!top.empty())
-                throw std::runtime_error("ambiguous reset signal " + reset.signal + "; specify top");
-            top = id2string(symbol.base_name);
+        std::string top = task.top ? task.top->value : "";
+        if (!task.top) {
+            // Match the existing reset lookup among EBMC's default top-level modules.
+            for (const auto& entry : system.symbol_table.symbols) {
+                const auto& symbol = entry.second;
+                if (symbol.type.id() != ID_verilog_module_instance ||
+                    id2string(symbol.name) != prefix + id2string(symbol.base_name) ||
+                    !system.symbol_table.lookup(id2string(symbol.name) + "." + name))
+                    continue;
+                if (!top.empty()) reset_error(reset, "is ambiguous among top-level modules; specify top");
+                top = id2string(symbol.base_name);
+            }
+            if (top.empty()) reset_error(reset, "does not exist in any top-level module");
         }
-        if (top.empty()) throw std::runtime_error("unknown reset signal " + reset.signal + " in top-level modules");
-        create_reset_logic(reset_expression(reset, top), system);
+
+        const auto& module = system.symbol_table.lookup_ref(verilog_module_symbol(top));
+        const auto& ports = to_module_type(module.type).ports();
+        const auto port = std::find_if(ports.begin(), ports.end(), [&](const auto& item) {
+            return item.base_name() == name;
+        });
+        if (port == ports.end()) {
+            const auto* symbol = system.symbol_table.lookup(prefix + top + "." + name);
+            if (!symbol) reset_error(reset, "does not exist in " + top);
+            const char* kind = symbol->is_state_var || symbol->is_lvalue ? "a register" :
+                               symbol->is_macro ? "a constant" : "an internal signal";
+            reset_error(reset, std::string("is ") + kind + ", not an input of " + top);
+        }
+        if (port->direction() != ID_input)
+            reset_error(reset, "is an " + id2string(port->direction()) + " port, not an input of " + top);
+
+        const auto width = verilog_bits_opt(port->type());
+        if (!width)
+            reset_error(reset, "is an input of " + top + " with no fixed bit width; expected a 1-bit input");
+        if (*width != 1)
+            reset_error(reset, "is a " + integer2string(*width) + "-bit input of " + top +
+                               "; expected a 1-bit input");
+
+        // Use EBMC's --reset implementation after validating the elaborated port.
+        create_reset_logic(reset_expression(reset.value, top), system);
     }
 };
 
@@ -136,7 +171,7 @@ void write_wave(const trans_tracet& trace, const fs::path& file, messaget& messa
     wave.close();
 }
 
-void solve(const front::Task& task, const fs::path& scratch, Reporter reporter) {
+void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, EngineRun operation) {
     auto cmd = command_line(task);
     register_language(new_verilog_language);
     format_hooks();
@@ -150,7 +185,8 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter) 
         if (!undriven.empty() && task.undriven.value == Undriven::error) throw UndrivenError{};
     });
     if (!system) throw std::runtime_error("EBMC produced no transition system");
-    if (task.reset && !task.top) language.reset_in_default_top(task.reset->value, *system);
+    if (task.reset) language.apply_reset(task, *system);
+    if (operation == EngineRun::validate_reset) return;
     auto properties = ebmc_propertiest::from_command_line(cmd, *system, messages);
     properties.properties.remove_if([](const auto& p) { return p.is_exists_path(); });
 
@@ -217,9 +253,10 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter) 
 }
 } // namespace
 
-bool run_engine(const front::Task& task, const std::filesystem::path& scratch, Reporter reporter) {
+bool run_engine(const front::Task& task, const std::filesystem::path& scratch, Reporter reporter,
+                EngineRun operation) {
     try {
-        solve(task, scratch, reporter);
+        solve(task, scratch, reporter, operation);
         return true;
     } catch (const UndrivenError&) {
         return false;

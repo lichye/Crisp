@@ -11,7 +11,9 @@ struct Reporter {
     void send(std::size_t index, const char* status, const std::string& detail = {}) const;
 };
 
+enum class EngineRun { validate_reset, solve };
+
 // Returns false when the task's undriven policy rejects the design.
-bool run_engine(const front::Task&, const std::filesystem::path& scratch, Reporter);
+bool run_engine(const front::Task&, const std::filesystem::path& scratch, Reporter, EngineRun);
 
 } // namespace crisp::check

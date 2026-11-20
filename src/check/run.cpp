@@ -68,7 +68,8 @@ void set_memory_limit(std::uint64_t mib) {
     }
 }
 
-[[noreturn]] void worker(const front::Task& task, const fs::path& scratch, Reporter reporter) {
+[[noreturn]] void worker(const front::Task& task, const fs::path& scratch, Reporter reporter,
+                         EngineRun operation) {
     int status = 2;
     try {
 #ifndef __APPLE__
@@ -80,7 +81,7 @@ void set_memory_limit(std::uint64_t mib) {
         const struct rlimit no_core{0, 0};
         if (::setrlimit(RLIMIT_CORE, &no_core) < 0) throw os_error("disable task core dumps");
         if (task.ram_mib) set_memory_limit(task.ram_mib->value);
-        if (run_engine(task, scratch, reporter)) status = 0;
+        if (run_engine(task, scratch, reporter, operation)) status = 0;
     } catch (const std::bad_alloc&) {
         std::fputs("EBMC exhausted available memory\n", stderr);
     } catch (const std::exception& error) {
@@ -92,6 +93,29 @@ void set_memory_limit(std::uint64_t mib) {
     std::cerr.flush();
     std::fflush(nullptr);
     ::_exit(status);
+}
+
+veval::util::GroupWait run_worker(const front::Task& task, const fs::path& scratch,
+                                 Clock::time_point deadline, std::string& events, EngineRun operation) {
+    Pipe pipe;
+    std::string error;
+    for (int& fd : pipe.fd)
+        if (!veval::util::moveAboveStandardDescriptors(fd, error, "result pipe")) throw std::runtime_error(error);
+    if (::fcntl(pipe.fd[0], F_SETFL, O_NONBLOCK) < 0) throw os_error("configure result pipe");
+    std::cout.flush();
+    std::cerr.flush();
+    const auto pid = veval::util::forkProofContext();
+    if (pid < 0) throw os_error("start EBMC");
+    if (pid == 0) {
+        pipe.close_end(0);
+        worker(task, scratch, {pipe.fd[1]}, operation);
+    }
+    pipe.close_end(1);
+    const auto wait = veval::util::waitForProofContext(pid, deadline, std::chrono::milliseconds(5),
+                                                       [&] { pipe.drain(events); });
+    pipe.drain(events);
+    if (!wait.error.empty()) throw std::runtime_error(wait.error);
+    return wait;
 }
 
 void check_options(const front::Task& task) {
@@ -280,25 +304,19 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     Scratch scratch;
     std::string error, events;
     if (!veval::util::ensureWaitableChildren(error)) throw std::runtime_error(error);
-    if (task.smart.source && task.smart.value == front::ToolUse::on)
-        mine(task, scratch.path, deadline);
-    Pipe pipe;
-    for (int& fd : pipe.fd)
-        if (!veval::util::moveAboveStandardDescriptors(fd, error, "result pipe")) throw std::runtime_error(error);
-    if (::fcntl(pipe.fd[0], F_SETFL, O_NONBLOCK) < 0) throw os_error("configure result pipe");
-    std::cout.flush();
-    std::cerr.flush();
-    const auto pid = veval::util::forkProofContext();
-    if (pid < 0) throw os_error("start EBMC");
-    if (pid == 0) {
-        pipe.close_end(0);
-        worker(task, scratch.path, {pipe.fd[1]});
-    }
-    pipe.close_end(1);
-    const auto wait = veval::util::waitForProofContext(pid, deadline, std::chrono::milliseconds(5),
-                                                       [&] { pipe.drain(events); });
-    pipe.drain(events);
-    if (!wait.error.empty()) throw std::runtime_error(wait.error);
+    const auto wait = [&] {
+        if (task.smart.source && task.smart.value == front::ToolUse::on) {
+            // SMART also consumes reset and runs checks. Validate before starting it.
+            if (task.reset) {
+                const auto validated = run_worker(task, scratch.path, deadline, events, EngineRun::validate_reset);
+                if (validated.timedOut || !WIFEXITED(validated.status) || WEXITSTATUS(validated.status) != 0)
+                    return validated;
+                events.clear();
+            }
+            mine(task, scratch.path, deadline);
+        }
+        return run_worker(task, scratch.path, deadline, events, EngineRun::solve);
+    }();
     auto reports = read_events(events);
     const bool reject_undriven = task.undriven.value == front::Undriven::error;
     const bool rejected = reject_undriven && !reports.undriven.empty();
