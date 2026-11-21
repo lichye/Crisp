@@ -11,6 +11,8 @@ selected
 clocks
 unreadable
 struct
+array_function
+array_function_unprintable
 observe
 reset
 clamp
@@ -31,6 +33,8 @@ selected: veval-two.sv
 clocks: veval-clocks.sv
 unreadable: veval-unreadable.sv
 struct: veval-struct.sv
+array_function: veval-array-function.sv
+array_function_unprintable: veval-array-function.sv
 observe: veval-observe.sv
 reset: veval-reset.sv
 clamp: veval-clamp.sv
@@ -52,6 +56,9 @@ selected: top two_top
 clocks: top two_clocks
 unreadable: top unreadable
 struct: top struct_top
+array_function: top array_function_top
+array_function_unprintable: top array_function_top
+array_function_unprintable: define VEVAL_BAD_FUNCTION
 observe: top observe_top
 reset: top reset_top
 clamp: top clamp_top
@@ -68,6 +75,10 @@ veval only
 mode kind
 depth 5
 assumed_bmc: mode bmc
+array_function: mode bmc
+array_function: depth 2
+array_function_unprintable: mode bmc
+array_function_unprintable: depth 2
 spurious_on: veval on
 bug_on: veval on
 selected: properties two_top.u_child.p_one

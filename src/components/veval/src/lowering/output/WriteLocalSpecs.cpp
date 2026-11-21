@@ -18,10 +18,8 @@
 #include <util/simplify_expr.h>
 #include <util/std_expr.h>
 #include <util/symbol.h>
-#include <util/symbol_table_base.h>
 #include <util/json_irep.h>
 #include <verilog/verilog_expr.h>
-#include <verilog/verilog_typecheck_base.h>
 #include <verilog/verilog_types.h>
 #include <util/mathematical_types.h>
 
@@ -37,6 +35,7 @@
 #include <regex>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 
 namespace veval {
 namespace lowering {
@@ -138,7 +137,7 @@ std::string portDeclaration(const Port& port) {
     std::ostringstream out;
     out << (port.isOutput ? "output " : "input ");
     if (port.type)
-        return out.str() + port.type->prefix + " " + identifier(port.name) + port.type->suffix;
+        return out.str() + port.type->declare(identifier(port.name));
     out << "logic";
     if (port.isSigned) out << " signed";
     if (port.width > 1) out << " [" << port.width - 1 << ":0]";
@@ -467,8 +466,12 @@ bool printsDirectly(const exprt& expr) {
 std::optional<std::string> propertyText(const exprt& expr,
                                         const namespacet* ns) {
     if (ns) {
-        auto functions=frontend::prepareFunctionPrint(expr,*ns);
-        if (!functions.definitions.empty()) return propertyText(functions.expression,ns);
+        try {
+            auto functions = frontend::prepareFunctionPrint(expr, *ns);
+            if (!functions.definitions.empty()) return propertyText(functions.expression, ns);
+        } catch (const frontend::FunctionPrintError&) {
+            return {};
+        }
     }
     if (expr.id() == "#veval_sva_locals") return propertyText(expr.operands()[0],ns);
     if (printsDirectly(expr))
@@ -599,7 +602,7 @@ bool referencesChildInstance(const std::vector<const PropertyLanding*>& carried,
 // Admit only exact landings with a printable expression in the target scope.
 bool tier1(const PropertyLanding& transport) {
     return admitLanding(transport, LandingUse::Exact) && transport.edge->productPortError.empty() &&
-           transport.rebasePrintable &&
+           transport.functionPrintError.empty() && transport.rebasePrintable &&
            transport.monitor.sourceProperty.is_not_nil() &&
            !namesOutsideInstance(transport) &&
            propertyText(transport.monitor.sourceProperty, nullptr).has_value();
@@ -1000,6 +1003,8 @@ void writePartialNote(std::ostream& out, const ModuleSpecOptions& options,
 
     if (!row.edge->productPortError.empty())
         out << "Stopped by: " << row.edge->productPortError << ".\n";
+    if (!row.functionPrintError.empty())
+        out << "Stopped by: " << row.functionPrintError << ".\n";
 
     // Only a constructed monitor can be missing its printable source form.
     if (row.monitor.sourceProperty.is_nil() && row.certified)
@@ -1007,7 +1012,7 @@ void writePartialNote(std::ostream& out, const ModuleSpecOptions& options,
                "property.\n";
     else if (row.result == LoweringCoverage::Full && row.roundTrips &&
              row.rebasePrintable && row.edge->productPortError.empty() &&
-             !namesOutsideInstance(row))
+             row.functionPrintError.empty() && !namesOutsideInstance(row))
         out << "Stopped by: the carried form has no SystemVerilog spelling --\n"
                "the property is normalised to a temporal shape this printer\n"
                "cannot write out. The transport itself carried whole.\n";
@@ -1141,115 +1146,11 @@ std::string proofKey(const std::string& instance,
 }
 
 void prepareLocalPortTypes(std::vector<InstanceEdge>& edges, const namespacet& ns) {
-    using PortType = InstanceEdge::ProductPortType;
-    using TypeSymbols = std::map<typet, std::vector<const symbolt*>>;
-
+    frontend::VerilogTypePrinter printer(ns);
     const auto needsType = [](const typet& type) {
         return type.id() == ID_array || type.id() == ID_struct || type.id() == ID_union ||
                type.get(ID_C_verilog_type) == ID_verilog_enum;
     };
-    TypeSymbols aggregateTypedefs;
-    std::map<irep_idt, std::vector<const symbolt*>> enumTypedefs;
-    for (const auto& [id, symbol] : ns.get_symbol_table().symbols) {
-        if (!symbol.is_type) continue;
-        if (symbol.type.get(ID_C_verilog_type) == ID_verilog_enum)
-            enumTypedefs[symbol.type.get(ID_C_identifier)].push_back(&symbol);
-        else if (symbol.type.id() == ID_struct || symbol.type.id() == ID_union)
-            aggregateTypedefs[make_two_valued(symbol.type)].push_back(&symbol);
-    }
-
-    const auto dimension = [](const mp_integer& low, const mp_integer& size, bool increasing) {
-        const auto high = low + size - 1;
-        return "[" + integer2string(increasing ? low : high) + ":" +
-               integer2string(increasing ? high : low) + "]";
-    };
-
-    const auto sameDeclaration = [](const typet& port, const typet& alias) {
-        const auto& actual = to_struct_union_type(port).components();
-        const auto& declared = to_struct_union_type(alias).components();
-        // Elaboration replaces the outer location with the port use site.
-        // The fields retain their locations in the definition, distinguishing
-        // otherwise identical unpacked structs declared in different scopes.
-        return !actual.empty() && std::equal(
-            actual.begin(), actual.end(), declared.begin(), declared.end(),
-            [](const auto& a, const auto& b) {
-                return !a.source_location().is_nil() &&
-                       a.source_location().get_file() == b.source_location().get_file() &&
-                       a.source_location().get_line() == b.source_location().get_line();
-            });
-    };
-
-    const auto spelling = [&](const typet& original) -> std::optional<PortType> {
-        const typet* type = &original;
-        std::string packed, unpacked;
-        while (type->id() == ID_array) {
-            const auto& array = to_verilog_array_type(*type);
-            if (array.is_unpacked())
-                unpacked += dimension(array.offset(), array.size_int(), array.increasing());
-            else
-                packed += " " + dimension(array.offset(), array.size_int(), array.increasing());
-            type = &array.element_type();
-        }
-
-        PortType result;
-        result.suffix = std::move(unpacked);
-        if (needsType(*type)) {
-            // Struct and enum ports need the original typedef. A fresh declaration
-            // may be a different SystemVerilog type even with the same layout.
-            const std::vector<const symbolt*>* candidates = nullptr;
-            if (type->get(ID_C_verilog_type) == ID_verilog_enum) {
-                const auto found = enumTypedefs.find(type->get(ID_C_identifier));
-                if (found != enumTypedefs.end()) candidates = &found->second;
-            } else {
-                const auto found = aggregateTypedefs.find(make_two_valued(*type));
-                if (found != aggregateTypedefs.end()) candidates = &found->second;
-            }
-            if (!candidates) return {};
-            std::map<std::string, const symbolt*> accessible;
-            for (const auto* symbol : *candidates) {
-                const auto full = display(symbol->name);
-                const auto separator = full.find("::");
-                if (separator == std::string::npos || full.find('.') != std::string::npos ||
-                    full.find("::", separator + 2) != std::string::npos)
-                    continue;
-                if (type->get(ID_C_verilog_type) != ID_verilog_enum &&
-                    !sameDeclaration(*type, symbol->type))
-                    continue;
-                accessible.emplace(full, symbol);
-            }
-            if (accessible.empty()) return {};
-            const auto& [full, symbol] = *accessible.begin();
-            result.scope = full.substr(0, full.find("::"));
-            result.name = id2string(symbol->base_name);
-            const symbolt* declared = symbol;
-            if (result.scope != "$unit") {
-                const symbolt* package = nullptr;
-                if (ns.lookup(verilog_package_identifier(result.scope), package))
-                    return {};
-                declared = package;
-            }
-            if (declared->location.get_file().empty()) return {};
-            result.declarationFile = id2string(declared->location.get_file());
-            result.prefix = full + packed;
-            return result;
-        }
-
-        if (type->id() != ID_bool && type->id() != ID_unsignedbv &&
-            type->id() != ID_signedbv && type->id() != ID_verilog_unsignedbv &&
-            type->id() != ID_verilog_signedbv)
-            return {};
-        result.prefix = is_four_state_vector(*type) ? "logic" : "bit";
-        if (type->id() == ID_signedbv || type->id() == ID_verilog_signedbv)
-            result.prefix += " signed";
-        result.prefix += packed;
-        if (type->id() != ID_bool) {
-            const auto& vector = to_verilog_vector_type(*type);
-            if (vector.get_width() > 1 || !vector.get(ID_C_offset).empty())
-                result.prefix += " " + dimension(vector.offset(), vector.get_width(), vector.increasing());
-        }
-        return result;
-    };
-
     for (auto& edge : edges) {
         const auto prefix = edge.instance + ".";
         for (const auto& binding : edge.bindings) {
@@ -1259,7 +1160,7 @@ void prepareLocalPortTypes(std::vector<InstanceEdge>& edges, const namespacet& n
             if (shown.compare(0, prefix.size(), prefix) != 0) continue;
             const auto name = shown.substr(prefix.size());
             if (!edge.ports.count(name) || edge.productPortTypes.count(name)) continue;
-            auto type = spelling(port.type());
+            auto type = printer.spelling(port.type());
             if (!type) {
                 edge.productPortError = "port " + name +
                     " has no unambiguous package or $unit type declaration "
@@ -1267,6 +1168,28 @@ void prepareLocalPortTypes(std::vector<InstanceEdge>& edges, const namespacet& n
                 break;
             }
             edge.productPortTypes.emplace(name, std::move(*type));
+        }
+    }
+}
+
+void prepareProductFunctions(std::vector<PropertyLanding>& transports, const namespacet& ns) {
+    for (auto& row : transports) {
+        if (!row.placed || row.monitor.sourceProperty.is_nil() || !tier1(row))
+            continue;
+        std::unordered_set<const void*> visited;
+        const auto hasHelper = [&](const exprt& e, const auto& self) -> bool {
+            if (!visited.insert(&e.get_sub()).second) return false;
+            if (e.get_bool("#veval_sva_compact_function")) return true;
+            return std::any_of(e.operands().begin(), e.operands().end(),
+                [&](const exprt& operand) { return self(operand, self); });
+        };
+        if (!hasHelper(row.monitor.sourceProperty, hasHelper)) continue;
+        try {
+            const auto expression = printedExpression(row, ns);
+            frontend::prepareFunctionPrint(expression, ns);
+            localDeclarationsText(expression, ns);
+        } catch (const frontend::FunctionPrintError& error) {
+            row.functionPrintError = error.what();
         }
     }
 }
@@ -1303,10 +1226,14 @@ std::vector<ConstantBinding> constantInputBindings(const InstanceEdge& edge,
 
 std::string propertyFingerprint(const PropertyLanding& transport,
                                 const namespacet& ns) {
-    const auto expression = printedExpression(transport, ns);
-    const auto text = propertyText(expression, &ns);
-    if (!text) return {};
-    return fingerprint(util::svaSentence(localDeclarationsText(expression, ns), *text));
+    try {
+        const auto expression = printedExpression(transport, ns);
+        const auto text = propertyText(expression, &ns);
+        if (!text) return {};
+        return fingerprint(util::svaSentence(localDeclarationsText(expression, ns), *text));
+    } catch (const frontend::FunctionPrintError&) {
+        return {};
+    }
 }
 
 std::string boundaryPropertyText(const PropertyLanding& transport,
@@ -1327,6 +1254,12 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
 
     // Share prerequisite lookups across all products in this run.
     std::map<std::string, std::string> declarationCache;
+    const auto rememberDeclaration = [&](const frontend::VerilogTypeDeclaration& type) {
+        if (type.name.empty()) return;
+        const auto key = type.scope == "$unit"
+            ? "name:" + type.name : "package:" + type.scope;
+        declarationCache[key] = type.declarationFile;
+    };
 
     // Keep instance-specific environments separate even when instances share a module type.
     std::map<std::string, std::vector<const PropertyLanding*>> byInstance;
@@ -1735,6 +1668,8 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
 
             const auto expression = printedExpression(*row, ns);
             const auto functions = frontend::prepareFunctionPrint(expression, ns);
+            for (const auto& type : functions.prerequisites)
+                rememberDeclaration(type);
             for (const auto& [name, definition] : functions.definitions) {
                 const auto [found, inserted] = functionDefinitions.emplace(name, definition);
                 if (inserted) out << '\n' << definition;
@@ -1830,12 +1765,8 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
 
         // Scan only the body; header diagnostics can contain unrelated scope-qualified names.
         const auto text = out.str();
-        for (const auto& [port, type] : edge.productPortTypes) {
-            if (type.name.empty()) continue;
-            const auto key = type.scope == "$unit"
-                ? "name:" + type.name : "package:" + type.scope;
-            declarationCache[key] = type.declarationFile;
-        }
+        for (const auto& [port, type] : edge.productPortTypes)
+            rememberDeclaration(type);
         const auto block = prerequisiteBlock(
             prerequisites(text.substr(headerEnd), options, declarationCache), wrapper);
         util::writeAtomic(path.string(), [&](std::ostream& file) {

@@ -187,6 +187,8 @@ struct PropertyLanding {
 
     // The source SVA can express all bit rebases performed on the monitor.
     bool rebasePrintable = true;
+    // A pure helper with no equivalent spelling prevents product publication.
+    std::string functionPrintError;
 
     // Child monitor and incoming source monitor; meaningful only when certified.
     sva::Monitor monitor = sva::emptyMonitor();
