@@ -36,7 +36,7 @@ CRISP_VEVAL_SOURCES := \
 	lowering/connectivity/SignalReachability.cpp lowering/reports/ReachabilityReport.cpp \
 	lowering/reports/ExportHierarchyGraph.cpp \
 	util/database/Json.cpp \
-	lowering/environment/LocalEnvironment.cpp util/database/SavedVerdicts.cpp \
+	lowering/environment/LocalEnvironment.cpp lowering/LowerDesign.cpp util/database/SavedVerdicts.cpp \
 	lowering/reports/VerdictReport.cpp \
 	check/prepare/ReadLocalSpec.cpp \
 	frontend/rtl/HwCbmcVerilogSynthesis.cpp util/verilog/ProductExpression.cpp
