@@ -1,0 +1,17 @@
+[tasks]
+open
+locked
+
+[files]
+vacuity-total.sv
+
+[design]
+top total
+locked: define BLOCK_START
+
+[options]
+mode bdd
+
+[resource]
+timeout 8
+ram 2G

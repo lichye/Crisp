@@ -140,10 +140,6 @@ void select_properties(const front::Task& task, ebmc_propertiest& properties) {
     }
 }
 
-bool refuted(const Property& p) {
-    return p.is_refuted() || p.status == Property::statust::REFUTED_WITH_BOUND;
-}
-
 [[noreturn]] void reset_error(const front::Setting<front::Reset>& reset, const std::string& detail) {
     const auto& source = reset.source.value();
     throw std::runtime_error("crisp: " + source.file.string() + ":" + std::to_string(source.line) +
@@ -153,7 +149,7 @@ bool refuted(const Property& p) {
 class Verilog : public verilog_ebmc_languaget {
 public:
     using verilog_ebmc_languaget::verilog_ebmc_languaget;
-    irep_idt apply_reset(const front::Task& task, transition_systemt& system) {
+    void apply_reset(const front::Task& task, transition_systemt& system) {
         const auto& reset = *task.reset;
         const auto& name = reset.value.signal;
         const auto prefix = id2string(system.main_symbol->name) + ".";
@@ -196,7 +192,6 @@ public:
 
         // Use EBMC's --reset implementation after validating the elaborated port.
         create_reset_logic(reset_expression(reset.value, top), system);
-        return prefix + top + "." + name;
     }
 };
 
@@ -210,11 +205,11 @@ ebmc_propertiest single_target(const ebmc_propertiest& batch, const Property& ta
     return query;
 }
 
-// An exact BDD verdict need not have a linear witness. If BMC finds a
-// prefix for the original goal, certify that query before publishing it.
-std::optional<trans_tracet> reconstruct_certified(const cmdlinet& cmd, const transition_systemt& system,
-                                                  const ebmc_propertiest& batch, const Property& property,
-                                                  ui_message_handlert& messages) {
+} // namespace
+
+std::optional<trans_tracet> reconstruct_counterexample(
+    const cmdlinet& cmd, const transition_systemt& system, const ebmc_propertiest& batch, const Property& property,
+    TraceRequirement requirement, message_handlert& messages) {
     auto target = single_target(batch, property);
     auto& goal = target.properties.back();
     goal.unknown();
@@ -230,6 +225,7 @@ std::optional<trans_tracet> reconstruct_certified(const cmdlinet& cmd, const tra
         for (auto& p : result.properties) {
             if (p.identifier != property.identifier) continue;
             if (refuted(p) && p.witness_trace) {
+                if (requirement == TraceRequirement::finite_prefix) return std::move(p.witness_trace);
                 certify_property_witnesses(cmd, system, result, bound, messages);
                 if (refuted(p) && p.witness_trace && certified(*p.witness_trace))
                     return std::move(p.witness_trace);
@@ -242,6 +238,7 @@ std::optional<trans_tracet> reconstruct_certified(const cmdlinet& cmd, const tra
     return std::nullopt;
 }
 
+namespace {
 void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, EngineRun operation, Deadline deadline,
            const std::set<std::string>& skip) {
     auto cmd = command_line(task);
@@ -257,7 +254,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
         if (!undriven.empty() && task.undriven.value == Undriven::error) throw UndrivenError{};
     });
     if (!system) throw std::runtime_error("EBMC produced no transition system");
-    const irep_idt reset = task.reset ? language.apply_reset(task, *system) : irep_idt{};
+    if (task.reset) language.apply_reset(task, *system);
     if (operation == EngineRun::validate_reset) return;
     auto properties = ebmc_propertiest::from_command_line(cmd, *system, messages);
     properties.properties.remove_if([](const auto& p) { return p.is_exists_path(); });
@@ -295,7 +292,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
         } else if (refuted(p)) {
             if (p.witness_certificate == Property::witness_certificatet::TOTAL_BDD) {
                 reporter.send(index, "refuted", "exact BDD verdict (no certified waveform)");
-                p.witness_trace = reconstruct_certified(cmd, model, batch, p, messages);
+                p.witness_trace = reconstruct_counterexample(cmd, model, batch, p, TraceRequirement::certified, messages);
                 if (!p.witness_trace) return;
             }
             if (!p.witness_trace || !certified(*p.witness_trace))
@@ -320,7 +317,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
         }
     };
     auto check_batch = [&](ebmc_propertiest& batch) {
-        check_antecedents(cmd, *system, batch, task, reset, deadline, messages, report,
+        check_antecedents(cmd, *system, batch, task, deadline, messages, report,
                           [&](const irep_idt& id, const char* status, const std::string& detail) {
                               reporter.send(ids.at(id), status, detail);
                           });

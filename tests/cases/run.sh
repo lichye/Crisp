@@ -569,24 +569,9 @@ export REAL_YICES=$(command -v yices-smt2) VACUITY_MARKER="$work/vacuity-called"
 cat > vacuity-solver/yices-smt2 <<'SOLVER'
 #!/usr/bin/env bash
 if [[ ! -f $VACUITY_MARKER ]]; then
-    echo "$PPID" > "$VACUITY_MARKER"
-    # Give the random worker enough budget to start its first external solver.
-    sleep 0.2
+    touch "$VACUITY_MARKER"
     exec "$REAL_YICES" "$@"
 fi
-if [[ $VACUITY_FAULT == random_only ]]; then
-    if [[ -f $VACUITY_MARKER.pid ]]; then exec "$REAL_YICES" "$@"; fi
-    echo "$$" > "$VACUITY_MARKER.pid"
-    exec sleep 8
-fi
-if [[ $VACUITY_FAULT == partial ]]; then
-    # Only the sampling process may obtain a model. Stall its next trace.
-    if [[ $PPID == "$(cat "$VACUITY_MARKER")" ]]; then exit 1; fi
-    if [[ -e $VACUITY_MARKER.model ]]; then exec sleep 8; fi
-    if grep -q '^(get-value' "$1"; then touch "$VACUITY_MARKER.model"; fi
-    exec "$REAL_YICES" "$@"
-fi
-if [[ $VACUITY_FAULT == normal ]]; then exec "$REAL_YICES" "$@"; fi
 if [[ $VACUITY_FAULT == timeout ]]; then sleep 8; fi
 exit 1
 SOLVER
@@ -630,39 +615,180 @@ for mode in only on; do
     fi
 done
 
-# A hung first random trace spends only its opportunity budget. The original
-# BMC worker keeps its unwind and answers the exact antecedent query.
-rm -f "$VACUITY_MARKER" "$VACUITY_MARKER.pid"
-status=0
-VACUITY_FAULT=random_only PATH="$work/vacuity-solver:$PATH" timeout 11 \
-    "$root/build/crisp" vacuity-fault.salt >out 2>err || status=$?
-[[ $status == 3 && -s $VACUITY_MARKER.pid ]]
-has 'vacuity.late  vacuous'
-has 'antecedent not reached within depth 3'
-[[ ! -e /proc/$(cat "$VACUITY_MARKER.pid")/exe ]]
+check_unbounded_exclusion() {
+    if grep -Fq "$1  vacuous" out; then
+        has 'antecedent proved unreachable'
+    else
+        has "$1  unknown"
+        grep -Eq 'proved; vacuity check: (INCONCLUSIVE|finite counterexample has no certified infinite extension)' out
+    fi
+}
 
-# A confirmed random hit survives cancellation of a later trace, even
-# when the exact solver cannot answer the remaining target.
-sed -e 's/top vacuity/top sampled/' -e 's/properties vacuity.late/properties sampled.random_*/' vacuity-fault.salt > partial.salt
-rm -f "$VACUITY_MARKER" "$VACUITY_MARKER.model"
-status=0
-VACUITY_FAULT=partial PATH="$work/vacuity-solver:$PATH" timeout 11 \
-    "$root/build/crisp" partial.salt >out 2>err || status=$?
-[[ $status == 3 && -e $VACUITY_MARKER.model ]]
-has 'sampled.random_seen  passed'
-has 'sampled.random_never  unknown'
-has 'passed; vacuity check'
+# trip on the last sample satisfies both assumptions through the bound, but
+# cannot be extended through the next sample while !alarm remains in effect.
+for mode in kind pdr; do
+    run 3 vacuity-tail1 "$mode"
+    check_unbounded_exclusion tail.match_trip
+    run 0 vacuity-tail1 "open_$mode"
+    has 'tail.match_trip  proved'
+done
+run 0 vacuity-tail1 bounded
+has 'tail.match_trip  passed'
+has 'bmc depth 10'
 
-# An internal assumption can depend on logic outside the antecedent's cone.
-sed -e 's/top vacuity/top assumption_cone/' -e '/reset rst high/d' \
-    -e 's/properties vacuity.late/properties assumption_cone.dead/' vacuity-fault.salt > assumption-cone.salt
-rm -f "$VACUITY_MARKER"
-status=0
-VACUITY_FAULT=normal PATH="$work/vacuity-solver:$PATH" timeout 11 \
-    "$root/build/crisp" assumption-cone.salt >out 2>err || status=$?
-[[ $status == 3 ]]
-has 'assumption_cone.dead  vacuous'
-has 'antecedent not reached within depth 3'
+# Share the finite unwind with the antecedent of match_trip. The original
+# assertion still needs EBMC's strict certificate whether checked alone or
+# in that same batch. Repeat with the equivalent RTL monitor.
+for level in word bit; do
+    for monitor in '' 'define RTL_MONITOR'; do
+        for alarm in '' 'define ALLOW_ALARM'; do
+            cat > mixed.salt <<SALT
+[tasks]
+solo
+mixed
+[files]
+$root/tests/cases/vacuity-tail1.sv
+[design]
+top tail
+$monitor
+$alarm
+[options]
+mode bmc
+depth 10
+level $level
+properties tail.ordinary
+mixed: properties tail.match_trip
+SALT
+            for batch in solo mixed; do
+                status=0
+                timeout 11 "$root/build/crisp" mixed.salt "$batch" >out 2>err || status=$?
+                if [[ -n $alarm ]]; then
+                    [[ $status == 1 ]]; has 'tail.ordinary  refuted'
+                else
+                    [[ $status == 3 ]]; has 'tail.ordinary  unknown'
+                fi
+                if [[ $batch == mixed ]]; then has 'tail.match_trip  passed'; fi
+            done
+        done
+    done
+done
+
+# The finite prefix may place trip at the boundary. For either unbounded
+# engine a legal extension must also satisfy the obligation eight ticks later.
+for mode in kind pdr; do
+    run 3 vacuity-shallow "closed_$mode"
+    check_unbounded_exclusion shallow.outstanding
+    run 0 vacuity-shallow "open_$mode"
+    has 'shallow.outstanding  proved'
+done
+run 0 vacuity-shallow finite
+has 'shallow.outstanding  passed'
+
+# A four-cycle witness discharges early only. At cycle 30 the same design
+# still needs the original unbounded engine.
+run 3 vacuity-shallow multi
+has '1 task, 2 proved, 0 passed, 0 refuted, 1 vacuous, 0 unknown'
+has 'shallow.early  proved'
+has 'shallow.late  proved'
+has 'shallow.excluded  vacuous'
+run 0 vacuity-shallow pdr30
+has 'shallow.late  proved'
+run 3 vacuity-shallow bounded4
+has 'antecedent not reached within depth 4'
+for mode in kind pdr; do
+    run 0 vacuity-shallow "long_$mode"
+    has 'longloop.hit  proved'
+done
+
+# A 1200-tick startup exceeds both the shallow window and a short suffix
+# search. BDD's totality certificate belongs to early alone. An active
+# conflicting assumption excludes that same match in the second run.
+run 3 vacuity-total open
+has 'total.early  proved'
+has 'total.never  vacuous'
+run 3 vacuity-total locked
+has 'total.early  vacuous'
+has 'total.never  vacuous'
+
+# kind uses its native solver. The shallow witness search uses Yices.
+# Let Yices answer the first shallow query, then hang the second. In the second
+# run also break the fallback to distinguish a retained SAT hit from a recheck.
+mkdir shallow-tools
+export REAL_SPOT=$(command -v ltl2tgba) SHALLOW_MARKER="$work/shallow"
+cat > shallow-tools/yices-smt2 <<'SOLVER'
+#!/usr/bin/env bash
+if [[ $FALLBACK == window ]]; then touch "$SHALLOW_MARKER.first"; exec "$REAL_YICES" "$@"; fi
+if [[ $FALLBACK == unsupported && $PPID == "$(cat "$SHALLOW_MARKER.primary")" ]]; then
+    exec "$REAL_YICES" "$@"
+fi
+if [[ -e $SHALLOW_MARKER.stalled ]]; then exec "$REAL_YICES" "$@"; fi
+if [[ -e $SHALLOW_MARKER.first ]]; then
+    echo "$$" > "$SHALLOW_MARKER.stalled"
+    exec sleep 15
+fi
+touch "$SHALLOW_MARKER.first"
+exec "$REAL_YICES" "$@"
+SOLVER
+cat > shallow-tools/ltl2tgba <<'SPOT'
+#!/usr/bin/env bash
+if [[ $FALLBACK == window && -e $SHALLOW_MARKER.first ]]; then exit 1; fi
+if [[ $FALLBACK == unsupported ]]; then
+    if [[ ! -e $SHALLOW_MARKER.primary ]]; then echo "$PPID" > "$SHALLOW_MARKER.primary"; fi
+    if [[ $PPID != "$(cat "$SHALLOW_MARKER.primary")" ]]; then
+        touch "$SHALLOW_MARKER.unsupported"
+        exit 1
+    fi
+fi
+if [[ -e $SHALLOW_MARKER.stalled && $FALLBACK == error ]]; then exit 1; fi
+if [[ -e $SHALLOW_MARKER.stalled && $FALLBACK == timeout ]]; then
+    # The parent announced this run's TSV before starting the worker.
+    base=${SHALLOW_MARKER%/*}
+    journal=$(sed -n 's/^  progress  //p' "$base/out")
+    cp "$base/$journal" "$SHALLOW_MARKER.inflight"
+    exec sleep 15
+fi
+exec "$REAL_SPOT" "$@"
+SPOT
+chmod +x shallow-tools/{ltl2tgba,yices-smt2}
+for fallback in normal error; do
+    rm -f "$SHALLOW_MARKER.first" "$SHALLOW_MARKER.stalled"
+    FALLBACK=$fallback PATH="$work/shallow-tools:$PATH" run 3 vacuity-shallow multi
+    [[ -s $SHALLOW_MARKER.stalled && ! -e /proc/$(cat "$SHALLOW_MARKER.stalled")/exe ]]
+    has 'shallow.early  proved'
+    if [[ $fallback == normal ]]; then
+        has '1 task, 2 proved, 0 passed, 0 refuted, 1 vacuous, 0 unknown'
+    else
+        has '1 task, 1 proved, 0 passed, 0 refuted, 0 vacuous, 2 unknown'
+    fi
+done
+
+# The first proof has a certificate. The others are still checking when
+# the original task deadline interrupts the fallback. The final TSV must
+# contain the same decisions and timeout reasons as the CLI.
+rm -f "$SHALLOW_MARKER.first" "$SHALLOW_MARKER.stalled"
+FALLBACK=timeout PATH="$work/shallow-tools:$PATH" run 3 vacuity-shallow multi
+[[ $(wc -l < "$SHALLOW_MARKER.inflight") == 1 ]]
+journal=$(progress_file)
+[[ $(wc -l < "$journal") == 4 ]]
+grep -Fxq $'final\tshallow.early\t\tproved\t' "$journal"
+for prop in shallow.excluded shallow.late; do
+    has "$prop  unknown"
+    grep -Fxq $'final\t'"$prop"$'\t\tunknown\tproved; vacuity check timed out' "$journal"
+done
+has '1 task, 1 proved, 0 passed, 0 refuted, 0 vacuous, 2 unknown'
+
+# If the shallow worker cannot encode an assumption, it must query no target.
+rm -f "$SHALLOW_MARKER.first" "$SHALLOW_MARKER.stalled"
+FALLBACK=unsupported PATH="$work/shallow-tools:$PATH" run 3 vacuity-shallow multi
+[[ -e $SHALLOW_MARKER.unsupported && ! -e $SHALLOW_MARKER.first ]]
+has '1 task, 2 proved, 0 passed, 0 refuted, 1 vacuous, 0 unknown'
+
+# The loop can have period two. Even though its suffix reaches cycle 5,
+# only the match at cycle 4 survives an unavailable unbounded fallback.
+rm -f "$SHALLOW_MARKER.first"
+FALLBACK=window PATH="$work/shallow-tools:$PATH" run 3 vacuity-shallow window
+has 'periodic.on_time  proved'
+has 'periodic.later  unknown'
 
 # Spec 25: veval lowers the assertions; Crisp's EBMC checks each landing.
 run 0 veval assumed

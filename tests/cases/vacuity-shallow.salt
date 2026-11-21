@@ -1,0 +1,59 @@
+[tasks]
+multi
+pdr30
+bounded4
+closed_kind
+closed_pdr
+open_kind
+open_pdr
+finite
+window
+long_kind
+long_pdr
+
+[files]
+vacuity-shallow.sv
+
+[design]
+top shallow
+window: top periodic
+long_kind: top longloop
+long_pdr: top longloop
+open_kind: define ALLOW_ALARM
+open_pdr: define ALLOW_ALARM
+clock clk
+reset rst high
+
+[options]
+mode kind
+multi: depth 34
+multi: properties shallow.early
+multi: properties shallow.excluded
+multi: properties shallow.late
+pdr30: mode pdr
+pdr30: properties shallow.late
+bounded4: mode bmc
+bounded4: depth 4
+bounded4: properties shallow.late
+
+closed_kind: depth 34
+closed_kind: properties shallow.outstanding
+closed_pdr: mode pdr
+closed_pdr: properties shallow.outstanding
+open_kind: depth 34
+open_kind: properties shallow.outstanding
+open_pdr: mode pdr
+open_pdr: properties shallow.outstanding
+finite: mode bmc
+finite: depth 4
+finite: properties shallow.outstanding
+
+long_kind: depth 4
+long_pdr: mode pdr
+window: depth 8
+window: properties periodic.*
+
+[resource]
+timeout 8
+ram 32G
+thread 1
