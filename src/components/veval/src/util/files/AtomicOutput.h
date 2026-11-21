@@ -178,13 +178,15 @@ inline void writeAtomic(const std::string& path,
     if (::close(directoryDescriptor) < 0) fail("close output directory", errno);
 }
 
-// Finish a batch of Deferred publications and stale-file removals. A directory
+// Finish publications and stale-file removals, even when no files were written.
+// PerFile has flushed the file contents and only needs directory fsync. A directory
 // fsync alone would not flush file contents. Linux syncfs covers data and names
 // once per filesystem. On macOS, Deferred writes fsync each file before rename;
 // every output directory is fsynced here to complete publication.
 // This is not a multi-file transaction: failure or interruption before this
 // call leaves complete, atomically published files with unconfirmed durability.
-inline void syncAtomicOutputDirectories(const std::vector<std::string>& paths) {
+inline void syncAtomicOutputDirectories(const std::vector<std::string>& paths,
+                                        AtomicOutputSync durability = AtomicOutputSync::Deferred) {
 #ifndef __APPLE__
     std::set<dev_t> syncedDevices;
 #endif
@@ -202,15 +204,17 @@ inline void syncAtomicOutputDirectories(const std::vector<std::string>& paths) {
 #ifdef __APPLE__
         {
 #else
-        if (syncedDevices.insert(status.st_dev).second) {
+        if (durability == AtomicOutputSync::PerFile || syncedDevices.insert(status.st_dev).second) {
 #endif
             int result;
 #ifdef __APPLE__
-            do { result = ::fsync(directory.fd); } while (result < 0 && errno == EINTR);
+            const auto flush = ::fsync;
 #else
-            do { result = ::syncfs(directory.fd); } while (result < 0 && errno == EINTR);
+            const auto flush = durability == AtomicOutputSync::PerFile ? ::fsync : ::syncfs;
 #endif
-            if (result < 0) fail("flush batch output filesystem");
+            do { result = flush(directory.fd); } while (result < 0 && errno == EINTR);
+            if (result < 0)
+                fail(durability == AtomicOutputSync::PerFile ? "flush output directory" : "flush batch output filesystem");
         }
         const int descriptor = directory.fd;
         directory.fd = -1;

@@ -674,6 +674,22 @@ wave=crisp-out/veval_unassumed/veval/assumed_top.u_child.p_child/assumed_top.u_c
 has "assumed_top.u_child.p_child  unknown"
 has "local counterexample in assumed_top.u_child $wave"
 valid_vcd "$wave"
+# Private generated specs must survive a failing filesystem-wide flush, and
+# a failed fsync of their own data must still abort lowering.
+if command -v strace >/dev/null && strace -qq -o /dev/null -e inject=syncfs:error=EIO true 2>/dev/null; then
+    for call in syncfs fsync; do
+        status=0
+        timeout 11 strace -f -qq -e trace=syncfs,fsync -o "$work/$call.trace" -e "inject=$call:error=EIO" \
+            "$root/build/crisp" "$root/tests/cases/veval.salt" unassumed >out 2>err || status=$?
+        if [[ $call == syncfs ]]; then
+            [[ $status == 3 ]]
+            has 'local counterexample in assumed_top.u_child'
+        else
+            [[ $status == 2 ]]
+            has 'flush output' err
+        fi
+    done
+fi
 run 0 veval assumed_bmc
 has 'assumed_top.u_child.p_child  passed'
 has 'passed in assumed_top.u_child (veval), bmc depth 5'

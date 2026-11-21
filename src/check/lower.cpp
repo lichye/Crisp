@@ -161,6 +161,7 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
     products.discharge = &lowered.discharge;
     products.inputFiles = options.files;
     products.includePaths = options.includePaths;
+    products.syncPerFile = true;
     fs::create_directories(products.outDir);
     lowering::writeModuleSpecs(transports, lowered.aliases, ns, products);
 }
