@@ -8,6 +8,7 @@
 #include "util/database/SavedVerdicts.h"
 #include "lowering/output/ExportLoweringResults.h"
 #include "lowering/output/WriteLocalSpecs.h"
+#include "lowering/LowerDesign.h"
 #include "util/files/AtomicOutput.h"
 #include <ebmc/transition_system.h>
 #include <util/namespace.h>
@@ -15,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -27,24 +29,6 @@ namespace generation = veval::profile;
 namespace veval::cli {
 
 namespace {
-
-// A whole-DUT proof must preserve the wrapper's actual input environment.
-bool directWrapperInputs(const lowering::InstanceEdge& dut, const transition_systemt& system) {
-    std::set<std::string> connected;
-    std::set<irep_idt> available;
-    for (const auto& input : system.inputs()) available.insert(input.get_identifier());
-    for (const auto& binding : dut.bindings) {
-        const auto port = id2string(binding.port.get_identifier());
-        const auto local = port.substr(port.rfind('.') + 1);
-        if (binding.isOutput || !dut.inputs.count(local)) continue;
-        if (binding.parentExpr.id() != ID_symbol || binding.parentExpr.type() != binding.port.type())
-            return false;
-        const auto id = to_symbol_expr(binding.parentExpr).get_identifier();
-        if (!available.erase(id)) return false;
-        connected.insert(local);
-    }
-    return connected == dut.inputs;
-}
 
 // The design a stored verdict was decided on, by CONTENT: init, invar and
 // trans of the elaborated design, which hold no property. Comments
@@ -134,143 +118,67 @@ int runLowering(const CommandLineOptions& invocation) {
     reportRefusals(set);
     // Reject reserved labels before lowering or writing products.
     if (reportReservedLabels(set) != 0) return 2;
-    auto edges = generation::timed("design.connection-map", [&] {
-        return veval::lowering::connectionMap(design.transitionSystem());
-    });
-    // The formal wrapper still binds its ports to the whole DUT. With root
-    // placement, none of the edges inside that DUT are proof boundaries.
-    if (invocation.placement == "root") {
-        edges.erase(std::remove_if(edges.begin(), edges.end(), [](const auto& edge) {
-            return !edge.parentInstance.empty();
-        }), edges.end());
-        if (edges.size() != 1 || !directWrapperInputs(edges.front(), design.transitionSystem())) {
-            std::cerr << "root placement requires one DUT with distinct, directly wired wrapper inputs\n";
-            return 2;
+    // The steps from here to the products are shared with Crisp (LowerDesign.h).
+    std::optional<generation::Phase> preparation;
+    std::vector<veval::lowering::AuthoredAssumeOverDriven> authoredOverDriven;
+    veval::lowering::LoweringConfig config;
+    config.placement = invocation.placement;
+    config.threads = invocation.generationThreads.value_or(1);
+    config.blind = invocation.blind;
+    config.profile = profile;
+    config.lowered = [&](const veval::lowering::LoweredDesign& lowered) {
+        preparation.emplace("products.prepare");
+        // Disclose authored assumptions over driven nets without changing them.
+        authoredOverDriven = veval::lowering::authoredAssumesOverDriven(lowered.transports);
+        const bool manifestWritten = !invocation.logDir.empty() ||
+                                     invocation.json ||
+                                     !invocation.jsonOut.empty();
+        veval::lowering::warnAuthoredAssumesOverDriven(
+            authoredOverDriven, std::cerr, manifestWritten);
+
+        if (invocation.json)
+            veval::lowering::writeJson(lowered.transports, std::cout, set.unsupported,
+                                        authoredOverDriven, lowered.stoppedAbove);
+        else
+            veval::lowering::writeText(lowered.transports, std::cout);
+    };
+    config.savedVerdicts = [&] {
+        veval::environment::VerdictMap verdicts;
+        if (!invocation.logDir.empty()) {
+            const auto verdictsPath = (std::filesystem::path(invocation.logDir) / "verdicts.json").string();
+            std::ifstream previous(verdictsPath);
+            if (previous) {
+                verdicts = veval::environment::readVerdicts(previous, verdictsPath);
+                std::cerr << "read " << verdicts.size() << " previous verdict(s) from " << verdictsPath << "\n";
+                if (!verdicts.empty() && readText(verdictsPath + ".design") != designDigest(design.transitionSystem())) {
+                    std::cerr << "retired " << verdicts.size() << " previous verdict(s): the design changed, or its digest was not recorded\n";
+                    verdicts.clear();
+                }
+            }
         }
+        return verdicts;
+    };
+    veval::lowering::LoweredDesign lowered;
+    try {
+        lowered = veval::lowering::lowerDesign(design, set, config);
+    } catch (const veval::lowering::LoweringRefused& refused) {
+        std::cerr << refused.what() << "\n";
+        return 2;
     }
-    auto aliases = generation::timed("design.aliases", [&] {
-        return veval::lowering::signalAliases(design.transitionSystem());
-    });
-    auto definitions = generation::timed("design.combinational-definitions", [&] {
-        return veval::lowering::symbolic::CombinationalDefinitions(design.transitionSystem(), aliases);
-    });
-    // Attribution explains failures but must not change the lowering result.
-    auto attribution = generation::timed("design.attribution", [&] {
-        return invocation.blind ? veval::lowering::Attribution{}
-            : veval::lowering::attributionInputs(design.transitionSystem(), edges, aliases,
-                                                  invocation.generationThreads.value_or(1));
-    });
-    // Blackbox detection is independent of the optional attribution pass.
-    auto blackboxes = generation::timed("design.blackboxes", [&] {
-        return veval::lowering::blackboxInstances(
-            design.transitionSystem(), edges, invocation.generationThreads.value_or(1));
-    });
+    auto& transports = lowered.transports;
+    const auto& edges = lowered.edges;
+    const auto& aliases = lowered.aliases;
+    const auto& stoppedAbove = lowered.stoppedAbove;
+    auto& verdicts = lowered.verdicts;
+    const auto& discharge = lowered.discharge;
     namespacet ns(design.transitionSystem().symbol_table);
-    veval::lowering::prepareLocalPortTypes(edges, ns);
-    std::vector<veval::lowering::StoppedAbove> stoppedAbove;
-    auto transports = generation::timed("transport.initial", [&] {
-        return veval::lowering::lowerProperties(set, edges, aliases, attribution, blackboxes,
-                                              &stoppedAbove, invocation.generationThreads.value_or(1), &definitions);
-    });
-    veval::lowering::prepareProductFunctions(transports, ns);
-    if (invocation.placement == "root") {
-        std::set<std::string> boundAssumptions;
-        for (auto& row : transports) {
-            row.isAssumptionHere = row.isAssumption;
-            if (row.abortDropped || !lowering::isTier1(row)) row.placed = false;
-            if (row.placed && row.isAssumption &&
-                (row.isResetContract || lowering::usableAsAssumption(row)))
-                boundAssumptions.insert(row.property);
-        }
-        for (const auto& item : set.monitors) {
-            if (item.isAssumption && !boundAssumptions.count(item.property)) {
-                std::cerr << "whole-DUT wrapper could not bind assumption " << item.property << "\n";
-                return 2;
-            }
-        }
-        for (const auto& item : set.unsupported) {
-            if (item.isAssumption) {
-                std::cerr << "whole-DUT wrapper has unsupported assumption " << item.property << "\n";
-                return 2;
-            }
-        }
-    }
-    generation::Phase preparation("products.prepare");
-    // Disclose authored assumptions over driven nets without changing them.
-    auto authoredOverDriven =
-        veval::lowering::authoredAssumesOverDriven(transports);
-    const bool manifestWritten = !invocation.logDir.empty() ||
-                                 invocation.json ||
-                                 !invocation.jsonOut.empty();
-    veval::lowering::warnAuthoredAssumesOverDriven(
-        authoredOverDriven, std::cerr, manifestWritten);
-
-    if (invocation.json)
-        veval::lowering::writeJson(transports, std::cout, set.unsupported,
-                                    authoredOverDriven, stoppedAbove);
-    else
-        veval::lowering::writeText(transports, std::cout);
-
-    // Share the same environment between products and saved-result matching.
-    auto environment = generation::timed("environment", [&] {
-        return veval::environment::environment(
-            transports, edges, design.transitionSystem(), ns);
-    });
-
-    std::map<std::string, std::string> environmentFingerprint;
-    std::map<std::string, std::vector<std::string>> environmentShown;
-    std::map<std::string, std::set<std::string>> selectedAssumptions;
-    if (!profile.isFull()) {
-        for (const auto& transport : transports)
-            if (veval::lowering::usableAsAssumption(transport) &&
-                profile.usesAssumption(transport.instance, transport.property))
-                selectedAssumptions[transport.instance].insert(
-                    transport.property);
-    }
-    for (const auto& [instance, own] : environment) {
-        std::string digest = own.digest;
-        if (!profile.isFull()) {
-            digest += "\nenvironment-profile: " + profile.name();
-            for (const auto& property : selectedAssumptions[instance])
-                digest += "\nassumption: " + property;
-        }
-        environmentFingerprint[instance] = veval::lowering::fingerprintOf(digest);
-        for (const auto& premise : own.premises)
-            // Tie-offs already appear as statements in the product.
-            if (premise.source != veval::environment::Premise::Source::TieOff)
-                environmentShown[instance].push_back(premise.shown);
-    }
-
-    // Preserve saved annotations only when the elaborated design still matches.
-    veval::environment::VerdictMap verdicts;
-    if (!invocation.logDir.empty()) {
-        const auto verdictsPath = (std::filesystem::path(invocation.logDir) / "verdicts.json").string();
-        std::ifstream previous(verdictsPath);
-        if (previous) {
-            verdicts = veval::environment::readVerdicts(previous, verdictsPath);
-            std::cerr << "read " << verdicts.size() << " previous verdict(s) from " << verdictsPath << "\n";
-            if (!verdicts.empty() && readText(verdictsPath + ".design") != designDigest(design.transitionSystem())) {
-                std::cerr << "retired " << verdicts.size() << " previous verdict(s): the design changed, or its digest was not recorded\n";
-                verdicts.clear();
-            }
-        }
-    }
     auto productOptions = makeProductOptions(invocation, set,
-        environmentFingerprint, environmentShown, profile);
-
-    // Products and reports share the same assumption classifications.
-    auto discharge = veval::lowering::buildAssumptionDependencies(
-        transports, verdicts, environmentFingerprint, ns);
-    // Leave annotations outside this run's property filter untouched.
-    for (const auto& [key, tier] : discharge.premiseTier) {
-        auto found = verdicts.find(key);
-        if (found != verdicts.end()) found->second.premiseTier = tier;
-    }
+        lowered.environmentFingerprint, lowered.environmentShown, profile);
 
     veval::lowering::writeText(discharge, std::cerr,
                                 !invocation.logDir.empty());
 
-    preparation.stop();
+    if (preparation) preparation->stop();
     productOptions.proofs = std::move(verdicts);
     productOptions.discharge = &discharge;
     writeTransportProducts(

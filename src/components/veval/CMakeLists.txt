@@ -96,6 +96,7 @@ target_include_directories(veval_json PUBLIC ${VEVAL_SRC})
 # Environment and annotation support does not run a model checker.
 add_library(veval_environment STATIC
     ${VEVAL_SRC}/lowering/environment/LocalEnvironment.cpp
+    ${VEVAL_SRC}/lowering/LowerDesign.cpp
     ${VEVAL_SRC}/util/database/SavedVerdicts.cpp
     ${VEVAL_SRC}/lowering/reports/VerdictReport.cpp)
 target_link_libraries(veval_environment PUBLIC veval_frontend veval_sva

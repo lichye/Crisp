@@ -1,22 +1,13 @@
-// veval's lowering inside Crisp (spec 25): the steps of veval's runLowering,
-// called as a library with the task's settings, writing one product per
-// landing instance into the task's scratch directory. Built in ebmc.mk with the
-// engine's flags.
-//
-// Keep these steps in step with src/components/veval/src/lowering/RunLowering.cpp
-// (runLowering): when veval adds a step there, add it here too. Its logs,
-// reports and saved verdicts are left out on purpose.
+// veval's lowering inside Crisp (spec 25): veval's lowerDesign, the same steps
+// that veval's runLowering takes, called as a library with the task's settings,
+// writing one product per landing instance into the task's scratch directory.
+// Built in ebmc.mk with the engine's flags.
 #include "engine.hpp"
 
 #include <frontend/rtl/ElaboratedDesign.h>
 #include <frontend/sva/PropertyMonitor.h>
-#include <lowering/Symbolic/CombinationalDefinitions.h>
-#include <lowering/Symbolic/SignalAliases.h>
-#include <lowering/connectivity/ConnectionMap.h>
-#include <lowering/environment/AssumptionDependencies.h>
-#include <lowering/environment/LocalEnvironment.h>
+#include <lowering/LowerDesign.h>
 #include <lowering/output/WriteLocalSpecs.h>
-#include <lowering/propagation/PropertyLowering.h>
 
 #include <ebmc/transition_system.h>
 #include <util/namespace.h>
@@ -43,39 +34,6 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
     auto& system = design.transitionSystem();
 
     auto set = sva::monitors(system, design.messageHandler());
-    auto aliases = lowering::signalAliases(system);
-    auto edges = lowering::connectionMap(system);
-    // One clock may have several names: aliases, and a child's input port
-    // connected straight to the parent's signal.
-    std::map<std::string, std::string> same;
-    const auto find = [&](std::string name) {
-        while (same.count(name) && same[name] != name) name = same[name];
-        return name;
-    };
-    const auto strip = [](std::string name) { // Verilog::$root.top.clk -> top.clk
-        for (const std::string prefix : {"Verilog::", "$root."})
-            if (name.compare(0, prefix.size(), prefix) == 0) name.erase(0, prefix.size());
-        return name;
-    };
-    const auto unite = [&](const std::string& a, const std::string& b) {
-        const auto x = find(strip(a)), y = find(strip(b));
-        if (x != y) same[x] = y;
-    };
-    for (const auto& [name, representative] : aliases) unite(id2string(name), id2string(representative));
-    for (const auto& edge : edges)
-        for (const auto& binding : edge.bindings)
-            if (!binding.isOutput && binding.parentExpr.id() == ID_symbol)
-                unite(id2string(binding.port.get_identifier()),
-                      id2string(to_symbol_expr(binding.parentExpr).get_identifier()));
-    const auto net = [&](const std::string& name) { return find(strip(name)); };
-    std::set<std::string> clocks;
-    for (const auto& [property, clock] : set.samplingClocks) clocks.insert(net(clock));
-    if (clocks.size() > 1) {
-        std::string list;
-        for (const auto& clock : clocks) list += (list.empty() ? "" : ", ") + clock;
-        throw std::runtime_error("veval: the properties are sampled on more than one clock (" + list +
-                                 "); veval supports a single clock");
-    }
     // properties PATTERN (spec 20) selects the assertions to lower; assumptions all stay.
     const auto selected = [&](const std::string& name) {
         if (task.properties.empty()) return true;
@@ -97,26 +55,41 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
         reporter.send(index++, "unlowered", "veval cannot encode it: " + item.reason);
     }
 
-    lowering::symbolic::CombinationalDefinitions definitions(system, aliases);
-    auto attribution = lowering::attributionInputs(system, edges, aliases, 1);
-    auto blackboxes = lowering::blackboxInstances(system, edges, 1);
-    const namespacet ns(system.symbol_table);
-    lowering::prepareLocalPortTypes(edges, ns); // struct and array ports keep their types in products
-    lowering::singlePathPlacement = true;
-    std::vector<lowering::StoppedAbove> stopped;
-    auto transports = lowering::lowerProperties(set, edges, aliases, attribution, blackboxes, &stopped, 1,
-                                                &definitions);
+    const auto lowered = lowering::lowerDesign(design, set, lowering::LoweringConfig{});
+    const auto& edges = lowered.edges;
+    const auto& transports = lowered.transports;
 
-    lowering::prepareProductFunctions(transports, ns);
-    auto environments = environment::environment(transports, edges, system, ns);
-    std::map<std::string, std::string> fingerprints;
-    std::map<std::string, std::vector<std::string>> shown;
-    for (const auto& [instance, own] : environments) {
-        fingerprints[instance] = lowering::fingerprintOf(own.digest);
-        for (const auto& premise : own.premises)
-            if (premise.source != environment::Premise::Source::TieOff) shown[instance].push_back(premise.shown);
+    // One clock may have several names: aliases, and a child's input port
+    // connected straight to the parent's signal.
+    std::map<std::string, std::string> same;
+    const auto find = [&](std::string name) {
+        while (same.count(name) && same[name] != name) name = same[name];
+        return name;
+    };
+    const auto strip = [](std::string name) { // Verilog::$root.top.clk -> top.clk
+        for (const std::string prefix : {"Verilog::", "$root."})
+            if (name.compare(0, prefix.size(), prefix) == 0) name.erase(0, prefix.size());
+        return name;
+    };
+    const auto unite = [&](const std::string& a, const std::string& b) {
+        const auto x = find(strip(a)), y = find(strip(b));
+        if (x != y) same[x] = y;
+    };
+    for (const auto& [name, representative] : lowered.aliases) unite(id2string(name), id2string(representative));
+    for (const auto& edge : edges)
+        for (const auto& binding : edge.bindings)
+            if (!binding.isOutput && binding.parentExpr.id() == ID_symbol)
+                unite(id2string(binding.port.get_identifier()),
+                      id2string(to_symbol_expr(binding.parentExpr).get_identifier()));
+    const auto net = [&](const std::string& name) { return find(strip(name)); };
+    std::set<std::string> clocks;
+    for (const auto& [property, clock] : set.samplingClocks) clocks.insert(net(clock));
+    if (clocks.size() > 1) {
+        std::string list;
+        for (const auto& clock : clocks) list += (list.empty() ? "" : ", ") + clock;
+        throw std::runtime_error("veval: the properties are sampled on more than one clock (" + list +
+                                 "); veval supports a single clock");
     }
-    auto discharge = lowering::buildAssumptionDependencies(transports, {}, fingerprints, ns);
 
     // An assumption that reaches an instance with an assertion but cannot be
     // stated there is checked without it; the explanation must say so.
@@ -150,9 +123,9 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
     for (const auto& monitor : set.monitors) {
         if (!monitor.isResetContract) continue;
         for (const auto& instance : checked) {
-            const auto found = environments.find(instance);
+            const auto found = lowered.environment.find(instance);
             bool reset = false;
-            if (found != environments.end())
+            if (found != lowered.environment.end())
                 for (const auto& premise : found->second.premises)
                     reset = reset || premise.source == environment::Premise::Source::ResetContract;
             if (!reset)
@@ -161,6 +134,7 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
         }
     }
 
+    const namespacet ns(system.symbol_table);
     lowering::ModuleSpecOptions products;
     products.boundary = task.top->value;
     if (task.clock) products.clockPort = task.clock->value;
@@ -168,13 +142,13 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
     products.outDir = (scratch / "veval").string();
     for (const auto& monitor : set.monitors)
         if (!monitor.isResetContract) ++products.boundaryProperties;
-    products.environmentFingerprint = fingerprints;
-    products.environmentShown = shown;
-    products.discharge = &discharge;
+    products.environmentFingerprint = lowered.environmentFingerprint;
+    products.environmentShown = lowered.environmentShown;
+    products.discharge = &lowered.discharge;
     products.inputFiles = options.files;
     products.includePaths = options.includePaths;
     fs::create_directories(products.outDir);
-    lowering::writeModuleSpecs(transports, aliases, ns, products);
+    lowering::writeModuleSpecs(transports, lowered.aliases, ns, products);
 }
 
 } // namespace crisp::check
