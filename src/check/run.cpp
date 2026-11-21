@@ -709,7 +709,10 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             decided[job.property] = {job.property, status, detail + " in " + job.instance + " (veval)" + context};
         } else if (status == "refuted") {
             const auto wave = task_output_dir(task) / "veval" / file_name(job.property) / (file_name(job.instance) + ".vcd");
-            if (publish_file(dir / "0.vcd", wave, deadline)) {
+            if (!detail.empty()) {
+                detail = "local counterexample in " + job.instance + " (" + detail + ")" + context;
+                notes[job.property].push_back(detail);
+            } else if (publish_file(dir / "0.vcd", wave, deadline)) {
                 detail = "local counterexample in " + job.instance + " " + wave.string() + context;
                 notes[job.property].push_back(detail);
             } else {
@@ -918,7 +921,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         // A checking event carries the original proof. The parent settles it
         // below after waiting. Discovery alone carries no assertion result.
         const bool reported = p.status != "pending";
-        if (p.status == "refuted") {
+        if (p.status == "refuted" && p.detail.empty()) {
             auto dest = wave_path(task, p.name);
             if (publish_file(scratch.path / (std::to_string(i) + ".vcd"), dest, deadline))
                 p.detail = dest.string();

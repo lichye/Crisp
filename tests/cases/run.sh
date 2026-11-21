@@ -49,15 +49,6 @@ progress_file() {
     sed -n 's/^  progress  //p' out
 }
 
-# Two waveforms are the same apart from the $date block, which EBMC fills with the
-# current time to the second.
-same_vcd() {
-    if ! cmp -s <(sed '/^\$date/,/^\$end/d' "$1") <(sed '/^\$date/,/^\$end/d' "$2"); then
-        echo "waveforms differ: $1 $2" >&2
-        exit 1
-    fi
-}
-
 valid_vcd() {
     awk '
         $1 == "$scope" {depth++}
@@ -115,17 +106,24 @@ for mode in bmc kind pdr bmc_word kind_word; do
     has 'top.p  refuted'
     wave="crisp-out/reset-low_$mode/top.p.vcd"
     valid_vcd "$wave"
-    grep -Fxq '#2' "$wave"
-    if grep -Fxq '#3' "$wave"; then
-        echo "reset-low $mode: expected the first failure at cycle 2" >&2
-        cat "$wave" >&2
-        exit 1
-    fi
+    certificate=1
+    if [[ $mode == bmc* ]]; then certificate=0; fi
+    awk -v fixture=reset-low -v require_certificate="$certificate" -f "$root/tests/cases/check-witness.awk" "$wave"
 done
-# level word (spec 19) agrees with the bit level, including the waveform.
-for mode in bmc kind; do
-    same_vcd "crisp-out/reset-low_$mode/top.p.vcd" "crisp-out/reset-low_${mode}_word/top.p.vcd"
-done
+# A real witness with the opposite reset polarity must fail the same validator.
+printf '[files]\n%s\n[design]\nreset rst_n high\n[options]\nmode kind\ndepth 3\n' \
+    "$root/tests/cases/reset-low.sv" > reversed-reset.salt
+status=0
+timeout 11 "$root/build/crisp" reversed-reset.salt >out 2>err || status=$?
+[[ $status == 1 ]]
+has 'top.p  refuted'
+wave="crisp-out/reversed-reset/top.p.vcd"
+valid_vcd "$wave"
+if awk -v fixture=reset-low -v require_certificate=1 -f "$root/tests/cases/check-witness.awk" "$wave" 2>reversed-reset.err; then
+    echo 'reset-low validator accepted a witness with the opposite reset polarity' >&2
+    exit 1
+fi
+has 'expected active-low reset at #0' reversed-reset.err
 for mode in bmc bmc_word; do
     run 0 reset-high "$mode"
     has 'top.p  passed'
@@ -185,8 +183,20 @@ run 3 empty
 has 'no assertions'
 run 1 constant
 has 'empty.p_false  refuted'
-valid_vcd crisp-out/constant/empty.p_false.vcd
-has '1!' crisp-out/constant/empty.p_false.vcd
+wave=crisp-out/constant/empty.p_false.vcd
+valid_vcd "$wave"
+# This marker is emitted by the backend's empty-assignments renderer.
+has '$scope module ebmc $end' "$wave"
+has '$comment finite witness with proved total extension $end' "$wave"
+has '1!' "$wave"
+run 1 bdd-witness
+has '2 refuted, 0 vacuous, 0 unknown'
+wave=crisp-out/bdd-witness/ctl_witness.eventually_finishes.vcd
+valid_vcd "$wave"
+has '$comment witness loop ' "$wave"
+has $'final\tctl_witness.eventually_finishes\t\trefuted\t'"$wave" "$(progress_file)"
+has $'final\tctl_witness.finishes_in_phase\t\trefuted\texact BDD verdict (no certified waveform)' "$(progress_file)"
+[[ ! -e crisp-out/bdd-witness/ctl_witness.finishes_in_phase.vcd ]]
 run 2 syntax
 has 'syntax.sv' err
 grep -Eq '(line |:)2([^0-9]|$)' err
@@ -299,18 +309,57 @@ has 'buechi.p_quiet  proved'
 has 'buechi.p_next  refuted'
 has 'buechi.p_later  refuted'
 has '1 task, 1 proved, 0 passed, 2 refuted, 0 vacuous, 0 unknown'
-for case in 'p_next #1' 'p_later #2'; do
-    read -r target expected_time <<< "$case"
+for case in 'p_next 1' 'p_later 0'; do
+    read -r target choose_next <<< "$case"
     wave="crisp-out/buechi_multi_pdr/buechi.$target.vcd"
     valid_vcd "$wave"
-    last_time=$(awk '/^#[0-9]+$/ {last=$0} END {print last}' "$wave")
-    if [[ $last_time != "$expected_time" ]]; then
-        printf '%s: expected final timestamp %s, got %s\n' "$wave" "$expected_time" "$last_time" >&2
-        exit 1
-    fi
+    awk -v fixture=buechi -v require_certificate=1 -v choose_next="$choose_next" -f "$root/tests/cases/check-witness.awk" "$wave"
 done
+if awk -v fixture=buechi -v require_certificate=1 -v choose_next=1 -f "$root/tests/cases/check-witness.awk" \
+    crisp-out/buechi_multi_pdr/buechi.p_later.vcd 2>wrong-target.err; then
+    echo 'PDR witness validator accepted the other target waveform' >&2
+    exit 1
+fi
+has 'wrong initial reset or target choice' wrong-target.err
 run 2 buechi unsupported_contract
 has 'unsupported Buechi assumption buechi.live' err
+
+# An outstanding assumption cannot justify a refutation with no legal continuation.
+for window in one eight; do
+    delay=1
+    if [[ $window == eight ]]; then delay=8; fi
+    for mode in kind pdr; do
+        locked="${window}_locked_$mode"
+        allowed="${window}_allowed_$mode"
+        run 3 terminal-obligation "$locked"
+        has 'tail.unreachable  unknown'
+        [[ ! -e "crisp-out/terminal-obligation_$locked/tail.unreachable.vcd" ]]
+        run 1 terminal-obligation "$allowed"
+        has 'tail.unreachable  refuted'
+        wave="crisp-out/terminal-obligation_$allowed/tail.unreachable.vcd"
+        valid_vcd "$wave"
+        awk -v fixture=terminal -v require_certificate=1 -v delay="$delay" -f "$root/tests/cases/check-witness.awk" "$wave"
+    done
+done
+
+# The same bounded task also checks a finite antecedent. Its completion
+# cannot authorize publishing another goal's uncertified prefix.
+run 3 terminal-obligation one_locked_word_bmc
+has 'tail.unreachable  unknown'
+has 'tail.match_trip  passed'
+journal=$(progress_file)
+grep -Fxq $'final\ttail.unreachable\t\tunknown\tEBMC: INCONCLUSIVE' "$journal"
+grep -Fxq $'final\ttail.match_trip\t\tpassed\tbmc depth 10' "$journal"
+[[ ! -e crisp-out/terminal-obligation_one_locked_word_bmc/tail.unreachable.vcd ]]
+run 1 terminal-obligation one_allowed_word_bmc
+has 'tail.unreachable  refuted'
+has 'tail.match_trip  passed'
+wave=crisp-out/terminal-obligation_one_allowed_word_bmc/tail.unreachable.vcd
+valid_vcd "$wave"
+awk -v fixture=terminal -v require_certificate=1 -v delay=1 -v bound=10 -f "$root/tests/cases/check-witness.awk" "$wave"
+journal=$(progress_file)
+grep -Fxq $'final\ttail.unreachable\t\trefuted\t'"$wave" "$journal"
+grep -Fxq $'final\ttail.match_trip\t\tpassed\tbmc depth 10' "$journal"
 
 # The temporal assumption blocks a two-sample antecedent. Both proof batches
 # need the same assumption, including after lowering into a child instance.
@@ -328,11 +377,11 @@ for mode in kind pdr local_kind local_pdr; do
 done
 run 1 vacuity-buechi multi
 has '1 task, 1 proved, 0 passed, 2 refuted, 2 vacuous, 0 unknown'
-for target in next_bad later_bad; do
+for case in 'next_bad 1' 'later_bad 2'; do
+    read -r target delay <<< "$case"
     wave="crisp-out/vacuity-buechi_multi/vacuity_monitor.$target.vcd"
     valid_vcd "$wave"
-    if [[ $target == next_bad ]]; then final='#1'; else final='#2'; fi
-    [[ $(awk '/^#[0-9]+$/ {last=$0} END {print last}' "$wave") == "$final" ]]
+    awk -v fixture=vacuity-buechi -v require_certificate=1 -v delay="$delay" -f "$root/tests/cases/check-witness.awk" "$wave"
 done
 
 properties="$root/tests/cases/properties.salt"
@@ -359,12 +408,14 @@ mkdir -p empty-tmp
 for task in ram_word ram_auto; do
     TMPDIR="$work/empty-tmp" run 1 level-word "$task"
     has 'ram_word.p_written  passed'
+    has 'bmc depth 10'
     has 'ram_word.p_untouched  refuted'
-    valid_vcd "crisp-out/level-word_$task/ram_word.p_untouched.vcd"
-    # The memory element 5 is written in cycle 5 and read as nonzero in cycle 6.
-    [[ $(grep '^#' "crisp-out/level-word_$task/ram_word.p_untouched.vcd" | tail -n 1) == '#6' ]]
+    wave="crisp-out/level-word_$task/ram_word.p_untouched.vcd"
+    valid_vcd "$wave"
+    # The two solver selections have the same deterministic prefix. Each
+    # witness may then close at its own valid loop frame.
+    awk -v fixture=ram -v bound=10 -v require_certificate=1 -f "$root/tests/cases/check-witness.awk" "$wave"
 done
-same_vcd crisp-out/level-word_ram_word/ram_word.p_untouched.vcd crisp-out/level-word_ram_auto/ram_word.p_untouched.vcd
 # The SMT formulas go to the task's scratch directory, not to TMPDIR or /tmp.
 [[ -z $(ls -A empty-tmp) ]]
 if [[ -n $(find /tmp -maxdepth 1 -newer "$marker" -name 'smt2_dec_*' 2>/dev/null) ]]; then

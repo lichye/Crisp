@@ -1,0 +1,8 @@
+[files]
+bdd-witness.sv
+
+[design]
+top ctl_witness
+
+[options]
+mode bdd

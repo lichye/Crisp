@@ -1,0 +1,61 @@
+[tasks]
+one_locked_kind
+one_locked_pdr
+one_allowed_kind
+one_allowed_pdr
+eight_locked_kind
+eight_locked_pdr
+eight_allowed_kind
+eight_allowed_pdr
+one_locked_word_bmc
+one_allowed_word_bmc
+
+[files]
+terminal-obligation.sv
+
+[design]
+top tail
+clock clk
+one_locked_kind: define ONE_CYCLE
+one_locked_pdr: define ONE_CYCLE
+one_allowed_kind: define ONE_CYCLE
+one_allowed_pdr: define ONE_CYCLE
+one_allowed_kind: define ALLOW_ALARM
+one_allowed_pdr: define ALLOW_ALARM
+eight_allowed_kind: define ALLOW_ALARM
+eight_allowed_pdr: define ALLOW_ALARM
+one_locked_word_bmc: define ONE_CYCLE
+one_allowed_word_bmc: define ONE_CYCLE
+one_allowed_word_bmc: define ALLOW_ALARM
+
+[options]
+properties tail.unreachable
+one_locked_kind: mode kind
+one_locked_kind: level word
+one_locked_kind: depth 34
+one_locked_pdr: mode pdr
+one_allowed_kind: mode kind
+one_allowed_kind: level word
+one_allowed_kind: depth 34
+one_allowed_pdr: mode pdr
+eight_locked_kind: mode kind
+eight_locked_kind: level word
+eight_locked_kind: depth 34
+eight_locked_pdr: mode pdr
+eight_allowed_kind: mode kind
+eight_allowed_kind: level word
+eight_allowed_kind: depth 34
+eight_allowed_pdr: mode pdr
+one_locked_word_bmc: mode bmc
+one_locked_word_bmc: level word
+one_locked_word_bmc: depth 10
+one_locked_word_bmc: properties tail.match_trip
+one_allowed_word_bmc: mode bmc
+one_allowed_word_bmc: level word
+one_allowed_word_bmc: depth 10
+one_allowed_word_bmc: properties tail.match_trip
+
+[resource]
+timeout 30
+thread 1
+ram 2G

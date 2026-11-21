@@ -1,10 +1,12 @@
 #include "engine.hpp"
 #include "vacuity.hpp"
+#include "wave.hpp"
 
 #include <ebmc/bmc.h>
 #include <ebmc/ebmc_error.h>
 #include <ebmc/format_hooks.h>
 #include <ebmc/property_checker.h>
+#include <ebmc/witness_lasso.h>
 #include <langapi/mode.h>
 #include <util/arith_tools.h>
 #include <util/config.h>
@@ -20,6 +22,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -199,47 +202,44 @@ public:
 
 struct UndrivenError {};
 
-// The pinned IC3 engine returns a verdict without a witness. Reconstruct a
-// reachable counterexample for that exact assertion under the same deadline.
-trans_tracet reconstruct(const cmdlinet& cmd, const transition_systemt& system,
-                         ebmc_propertiest target, const Property& property, ui_message_handlert& messages) {
-    target.properties.remove_if([&](const auto& p) {
-        return !p.is_assumption() && p.identifier != property.identifier;
-    });
-    for (auto& p : target.properties)
-        if (!p.is_assumption()) p.unknown(); // IC3 has already marked this goal refuted.
+ebmc_propertiest single_target(const ebmc_propertiest& batch, const Property& target) {
+    ebmc_propertiest query;
+    for (const auto& p : batch.properties)
+        if (p.is_assumption()) query.properties.push_back(p);
+    query.properties.push_back(target);
+    return query;
+}
+
+// An exact BDD verdict need not have a linear witness. If BMC finds a
+// prefix for the original goal, certify that query before publishing it.
+std::optional<trans_tracet> reconstruct_certified(const cmdlinet& cmd, const transition_systemt& system,
+                                                  const ebmc_propertiest& batch, const Property& property,
+                                                  ui_message_handlert& messages) {
+    auto target = single_target(batch, property);
+    auto& goal = target.properties.back();
+    goal.unknown();
+    goal.witness_certificate = Property::witness_certificatet::NONE;
+    goal.witness_trace.reset();
     const auto factory = ebmc_solver_factory(cmd);
-    for (std::size_t bound = 1; bound < std::numeric_limits<unsigned>::max(); bound *= 2) {
+    const auto limit = witness_lasso_budget(cmd, std::nullopt);
+    if (!limit) return std::nullopt;
+    for (std::size_t bound = 1;; bound += std::min(bound, *limit - bound)) {
         auto result = bmc(bound, false, false, false, system, target, factory, messages);
         if (result.status != property_checker_resultt::statust::VERIFICATION_RESULT) break;
         bool reached_bound = false;
         for (auto& p : result.properties) {
             if (p.identifier != property.identifier) continue;
-            if (refuted(p) && p.witness_trace) return std::move(*p.witness_trace);
+            if (refuted(p) && p.witness_trace) {
+                certify_property_witnesses(cmd, system, result, bound, messages);
+                if (refuted(p) && p.witness_trace && certified(*p.witness_trace))
+                    return std::move(p.witness_trace);
+                return std::nullopt;
+            }
             reached_bound = p.is_proved_with_bound();
         }
-        if (!reached_bound) break;
+        if (!reached_bound || bound == *limit) break;
     }
-    throw std::runtime_error("EBMC could not reconstruct the counterexample for " + id2string(property.name));
-}
-
-void write_wave(const trans_tracet& trace, const fs::path& file, messaget& message, const namespacet& ns) {
-    if (trace.states.empty()) throw std::runtime_error("EBMC returned an empty counterexample");
-    std::ofstream wave(file);
-    wave.exceptions(std::ios::badbit | std::ios::failbit);
-    if (!trace.states.front().assignments.empty()) {
-        show_trans_trace_vcd(trace, message, ns, wave);
-    } else {
-        // A constant assertion can fail in a module without any signals.
-        // The fork's VCD writer requires a signal to identify the top scope.
-        wave << "$timescale 1ns $end\n$scope module crisp $end\n"
-                "$var wire 1 ! property_failed $end\n$upscope $end\n$enddefinitions $end\n";
-        for (std::size_t t = 0; t < trace.states.size(); ++t) {
-            wave << '#' << t << '\n' << (trace.states[t].property_failed ? '1' : '0') << "!\n";
-            if (trace.states[t].property_failed) break;
-        }
-    }
-    wave.close();
+    return std::nullopt;
 }
 
 void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, EngineRun operation, Deadline deadline,
@@ -281,13 +281,30 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
             return;
         }
         if (p.is_disabled()) return;
+        // The shared bounded search may supply a finite prefix from its
+        // original-goal batch. Apply the backend's policy to that exact query
+        // before the original result reaches the parent or progress file.
+        if (task.mode.value == Mode::bmc && refuted(p) && (!p.witness_trace || !certified(*p.witness_trace))) {
+            auto result = property_checker_resultt{single_target(batch, p)};
+            certify_property_witnesses(cmd, model, result, task.depth->value, messages);
+            p.copy_results_from(result.properties.back());
+        }
         const auto index = ids.at(p.identifier);
         if (p.is_failure() || p.is_unsupported()) {
             reporter.send(index, "error", p.location.as_string() + ": " + p.status_as_string());
         } else if (refuted(p)) {
-            if (!p.witness_trace) p.witness_trace = reconstruct(cmd, model, batch, p, messages);
+            if (p.witness_certificate == Property::witness_certificatet::TOTAL_BDD) {
+                reporter.send(index, "refuted", "exact BDD verdict (no certified waveform)");
+                p.witness_trace = reconstruct_certified(cmd, model, batch, p, messages);
+                if (!p.witness_trace) return;
+            }
+            if (!p.witness_trace || !certified(*p.witness_trace))
+                throw std::runtime_error("EBMC did not certify the counterexample for " + id2string(p.name));
             const namespacet ns(model.symbol_table);
-            write_wave(*p.witness_trace, scratch / (std::to_string(index) + ".vcd"), message, ns);
+            std::ofstream wave(scratch / (std::to_string(index) + ".vcd"));
+            wave.exceptions(std::ios::badbit | std::ios::failbit);
+            write_wave(*p.witness_trace, message, ns, wave);
+            wave.close();
             reporter.send(index, "refuted");
         } else if (task.mode.value == Mode::bmc && (p.is_proved_with_bound() || p.is_proved())) {
             reporter.send(index, "passed", "bmc depth " + std::to_string(task.depth->value));
