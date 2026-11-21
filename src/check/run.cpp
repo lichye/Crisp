@@ -532,6 +532,41 @@ struct VevalResult {
     bool failed = false, timed_out = false;
 };
 
+struct LocalPremises {
+    std::optional<front::Reset> initial_reset;
+    std::vector<std::string> clamps;
+    std::string unsupported;
+};
+
+LocalPremises local_premises(const VevalJob& job, const front::Task& task,
+                             const std::map<std::string, std::string>& reset_ports) {
+    // A reset premise sets the initial reset. A clamp applies in every state.
+    static const std::regex reset(R"(^reset asserted at the initial instant, from `[^']*' \(predicate: ([!~]?)(\w+)\)$)"),
+        clamp(R"(^(\w+) <= (\S+) \(the parent drives it through a clamp\)$)");
+    LocalPremises result;
+    for (const auto& premise : job.premises) {
+        std::smatch match;
+        if (std::regex_match(premise, match, reset) && !result.initial_reset)
+            result.initial_reset = front::Reset{match[2], match[1].length() ? front::Polarity::low : front::Polarity::high};
+        else if (std::regex_match(premise, match, clamp))
+            result.clamps.push_back(match[1].str() + " <= " + match[2].str());
+        else {
+            result.unsupported = "premise `" + premise + "'";
+            break;
+        }
+    }
+    if (!result.clamps.empty() && job.clock.empty()) result.unsupported = "clamps without a sampling clock";
+    // [design] reset reaches this instance through one of its inputs.
+    if (const auto port = reset_ports.find(job.instance); task.reset && port != reset_ports.end()) {
+        const front::Reset salt_reset{port->second, task.reset->value.polarity};
+        if (result.initial_reset && (result.initial_reset->signal != salt_reset.signal ||
+                                     result.initial_reset->polarity != salt_reset.polarity))
+            result.unsupported = "two different resets (" + result.initial_reset->signal + " and " + salt_reset.signal + ")";
+        result.initial_reset = salt_reset;
+    }
+    return result;
+}
+
 // Lower in one worker; then check each landing in its own worker, deepest
 // first, moving up one level after a local counterexample (algorithm 1).
 VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::time_point deadline,
@@ -608,32 +643,7 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             result.timed_out = true;
             break;
         }
-        // veval's local environment (spec 25, 2.4): a reset asserted at the initial
-        // instant becomes Crisp's reset; a clamp becomes an assumption in every state.
-        static const std::regex reset(R"(^reset asserted at the initial instant, from `[^']*' \(predicate: ([!~]?)(\w+)\)$)"),
-            clamp(R"(^(\w+) <= (\S+) \(the parent drives it through a clamp\)$)");
-        std::optional<front::Reset> initial_reset;
-        std::vector<std::string> clamps;
-        std::string unsupported;
-        for (const auto& premise : job.premises) {
-            std::smatch match;
-            if (std::regex_match(premise, match, reset) && !initial_reset)
-                initial_reset = front::Reset{match[2], match[1].length() ? front::Polarity::low : front::Polarity::high};
-            else if (std::regex_match(premise, match, clamp))
-                clamps.push_back(match[1].str() + " <= " + match[2].str());
-            else {
-                unsupported = "premise `" + premise + "'";
-                break;
-            }
-        }
-        if (!clamps.empty() && job.clock.empty()) unsupported = "clamps without a sampling clock";
-        // [design] reset reaches this instance through one of its inputs.
-        if (const auto port = reset_ports.find(job.instance); task.reset && port != reset_ports.end()) {
-            const front::Reset salt_reset{port->second, task.reset->value.polarity};
-            if (initial_reset && (initial_reset->signal != salt_reset.signal || initial_reset->polarity != salt_reset.polarity))
-                unsupported = "two different resets (" + initial_reset->signal + " and " + salt_reset.signal + ")";
-            initial_reset = salt_reset;
-        }
+        const auto [initial_reset, clamps, unsupported] = local_premises(job, task, reset_ports);
         if (!unsupported.empty()) {
             notes[job.property].push_back(job.instance + ": no local conclusion, Crisp cannot state its " + unsupported);
             continue;
