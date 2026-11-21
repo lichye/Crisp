@@ -1,0 +1,18 @@
+[tasks]
+bmc
+kind
+pdr
+
+[files]
+reset-high.sv
+
+[design]
+top top
+reset rst high
+
+[options]
+bmc: mode bmc
+bmc: depth 5
+kind: mode kind
+kind: depth 5
+pdr: mode pdr
