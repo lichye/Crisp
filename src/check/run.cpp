@@ -158,6 +158,14 @@ void check_options(const front::Task& task) {
                                  ": [options] level word: yices-smt2 not found in PATH; "
                                  "install yices or add its directory to PATH");
     }
+    // veval encodes temporal properties with Spot's ltl2tgba (spec 25).
+    if (task.veval.value != front::ToolUse::off && !on_path("ltl2tgba")) {
+        const auto& veval = task.veval.source.value();
+        throw std::runtime_error(veval.file.string() + ":" + std::to_string(veval.line) + ": [options] veval " +
+                                 std::string(front::spelling(task.veval.value)) +
+                                 ": ltl2tgba not found in PATH; install Spot "
+                                 "(https://spot.lre.epita.fr/install.html) or add its bin directory to PATH");
+    }
     if (task.smart.value == front::ToolUse::only)
         throw std::runtime_error("smart only is not supported");
     if (task.smart.value == front::ToolUse::on &&
