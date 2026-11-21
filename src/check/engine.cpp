@@ -30,6 +30,8 @@ namespace crisp::check {
 // except '.', '**' any characters, '?' one character except '.'. All other
 // characters, including '[' and ']', match literally.
 bool pattern_matches(std::string_view pattern, std::string_view name) {
+    if (pattern.find_first_of("*?") == pattern.npos) return pattern == name;
+
     enum class Kind { literal, one, star, stars };
     std::vector<std::pair<Kind, char>> tokens;
     for (std::size_t i = 0; i < pattern.size();) {
