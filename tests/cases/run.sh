@@ -875,6 +875,18 @@ has 'proved in clamp_top.u_child (veval)'
 # [design] reset (spec 25, 2.4.5) resets the landing's input on the same net.
 run 0 veval salt_reset
 has 'proved in reset_top.u_child (veval)'
+run 0 veval reset_agree
+has 'reset_top.u_child.p_small  proved'
+journal=$(progress_file)
+grep -Fxq $'local\treset_top.u_child.p_small\treset_top.u_child\tproved\tproved in reset_top.u_child (veval)' "$journal"
+grep -Fxq $'final\treset_top.u_child.p_small\t\tproved\tproved in reset_top.u_child (veval)' "$journal"
+run 3 veval reset_conflict
+has 'reset_top.u_child.p_small  unknown'
+reason='veval: reset_top.u_child: no local conclusion, Crisp cannot state its two different resets (rst and rst)'
+has "$reason"
+journal=$(progress_file)
+[[ $(wc -l < "$journal") == 2 ]]
+grep -Fxq $'final\treset_top.u_child.p_small\t\tunknown\t'"$reason" "$journal"
 run 3 veval no_reset
 has 'local counterexample in reset_top.u_child'
 run 0 veval aliases

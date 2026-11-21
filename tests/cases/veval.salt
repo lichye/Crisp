@@ -17,6 +17,8 @@ observe
 reset
 clamp
 salt_reset
+reset_agree
+reset_conflict
 no_reset
 unconnected
 aliases
@@ -41,6 +43,8 @@ observe: veval-observe.sv
 reset: veval-reset.sv
 clamp: veval-clamp.sv
 salt_reset: veval-reset.sv
+reset_agree: veval-reset.sv
+reset_conflict: veval-reset.sv
 no_reset: veval-reset.sv
 unconnected: veval-unreset.sv
 aliases: veval-reset.sv
@@ -69,6 +73,10 @@ clamp: top clamp_top
 salt_reset: top reset_top
 salt_reset: define NO_CONTRACT
 salt_reset: reset rst high
+reset_agree: top reset_top
+reset_agree: reset rst high
+reset_conflict: top reset_top
+reset_conflict: reset rst low
 no_reset: top reset_top
 no_reset: define NO_CONTRACT
 unconnected: top unreset_top
