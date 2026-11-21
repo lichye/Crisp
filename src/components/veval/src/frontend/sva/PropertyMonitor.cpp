@@ -478,7 +478,7 @@ MonitorSet monitors(const transition_systemt& transitionSystem,
         try {
             // The automaton is built for the negation, so it accepts exactly
             // the violating traces.
-            auto buechi = ltl_to_buechi(not_exprt{carried}, messageHandler);
+            auto buechi = ltl_to_buechi(not_exprt{carried}, false, messageHandler);
 
             // Any assertion can become an assumption after transport. Keep
             // all reachable NFA states, so !error excludes EVERY violating
@@ -616,7 +616,7 @@ std::optional<Monitor> antecedentCoverMonitor(const Monitor& monitor,
 
     try {
         exprt unreachable = sva_always_exprt{not_exprt{antecedent}};
-        auto buechi = ltl_to_buechi(not_exprt{unreachable}, handler);
+        auto buechi = ltl_to_buechi(not_exprt{unreachable}, false, handler);
         Monitor cover;
         cover.property = monitor.property + " antecedent cover";
         cover.sourceProperty = unreachable;
