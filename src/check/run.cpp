@@ -490,6 +490,7 @@ std::vector<VevalJob> read_products(const fs::path& dir) {
         module(R"(^module\s+(\w+))"), from(R"(^\s*// from:\s*(\S+))"),
         assertion(R"(^\s*(\w+):\s*assert\s+property\b)"), premise(R"(^\s*// premise: (.*)$)"),
         clock(R"(@\(posedge\s+(\w+)\))");
+    constexpr auto at_start = std::regex_constants::match_continuous;
     std::vector<VevalJob> jobs;
     for (const auto& file : files) {
         std::ifstream in(file);
@@ -499,12 +500,12 @@ std::vector<VevalJob> read_products(const fs::path& dir) {
         std::string source;
         std::smatch match;
         for (std::string line; std::getline(in, line);) {
-            if (std::regex_search(line, match, instance)) product.instance = match[1];
-            else if (std::regex_search(line, match, depth)) product.depth = std::stoul(match[1]);
-            else if (product.wrapper.empty() && std::regex_search(line, match, module)) product.wrapper = match[1];
-            else if (std::regex_search(line, match, from)) source = match[1];
-            else if (std::regex_search(line, match, assertion)) labels.emplace_back(source, match[1]);
-            else if (std::regex_search(line, match, premise)) product.premises.push_back(match[1]);
+            if (std::regex_search(line, match, instance, at_start)) product.instance = match[1];
+            else if (std::regex_search(line, match, depth, at_start)) product.depth = std::stoul(match[1]);
+            else if (product.wrapper.empty() && std::regex_search(line, match, module, at_start)) product.wrapper = match[1];
+            else if (std::regex_search(line, match, from, at_start)) source = match[1];
+            else if (std::regex_search(line, match, assertion, at_start)) labels.emplace_back(source, match[1]);
+            else if (std::regex_search(line, match, premise, at_start)) product.premises.push_back(match[1]);
             // Internal observations are written as u_dut.<name>, which the engine reads directly.
             if (product.clock.empty() && std::regex_search(line, match, clock)) product.clock = match[1];
         }
