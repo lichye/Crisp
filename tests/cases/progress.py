@@ -87,6 +87,22 @@ assert str(wave) in rows[0][4] and wave.is_file()
 assert rows[-1][4] == rows[1][4] and rows[-1][4] in run.stdout
 assert run.stdout.endswith("1 task, 1 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown\n")
 
+# The two deeper landings come first, in their original order. Their parent
+# rechecks join the end of the shallower queue, behind an existing landing.
+run = subprocess.run([crisp, cases / "veval-order.salt"], capture_output=True, text=True, check=True)
+rows = records(progress_path(run.stdout))
+assert [row[:4] for row in rows] == [
+    ["local", "order_top.b_deep", "order_top.u_mid.u_leaf", "refuted"],
+    ["local", "order_top.c_deep", "order_top.u_mid.u_leaf", "refuted"],
+    ["local", "order_top.a_shallow", "order_top.u_shallow", "proved"],
+    ["final", "order_top.a_shallow", "", "proved"],
+    ["local", "order_top.b_deep", "order_top.u_mid", "proved"],
+    ["final", "order_top.b_deep", "", "proved"],
+    ["local", "order_top.c_deep", "order_top.u_mid", "proved"],
+    ["final", "order_top.c_deep", "", "proved"],
+], rows
+assert run.stdout.endswith("1 task, 3 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown\n")
+
 # The published VCD path includes the unusual SALT stem. Escaping keeps it
 # reversible in a single five-field record, including a literal backslash-t.
 stem = "escaped\\t\t\r\n"

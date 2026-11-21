@@ -1,0 +1,11 @@
+[files]
+veval-order.sv
+veval-up.sv
+
+[design]
+top order_top
+
+[options]
+veval only
+mode kind
+depth 5
