@@ -344,8 +344,12 @@ ModuleInfo parseModuleFile(const std::string& path, const std::string& top,
                 const auto module = sources.find(target.base_name);
                 if(module == sources.end())
                     continue;  // Interfaces and checkers are not Verilog modules.
+                std::vector<std::string> inputPorts;
+                for (const auto& port : to_module_type(target.type).ports())
+                    if (port.input() && !port.output())
+                        inputPorts.push_back(id2string(port.base_name()));
                 instances->push_back({instance.substr(prefix.size()), id2string(target.base_name),
-                                      freeRegs(*module->second, symbols, instance)});
+                                      freeRegs(*module->second, symbols, instance), std::move(inputPorts)});
             }
             std::sort(instances->begin(), instances->end(),
                       [](const auto& a, const auto& b) { return a.path < b.path; });

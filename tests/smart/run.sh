@@ -10,6 +10,7 @@ cd -- "$work"
 
 smart="$root/src/components/smartVerilog/build/smart"
 crisp="$root/build/crisp"
+slang=${CRISP_SLANG:-$root/src/components/slang/build/bin/slang}
 export CRISP_SMART="$smart"
 unset SMART_EBMC
 
@@ -164,6 +165,8 @@ SV
 run 0 final-check.log "$smart" --no-discover-siblings sample/comb_xor.sv --simulator iverilog \
     --cycles 2 --traces 1 --seed 1 --refine 5 --no-blockified -j 1 --keep-work \
     --workdir final-check -o final-check.sv
+grep -Fq '    always_comb assert (' final-check.sv
+"$slang" --top comb_xor final-check.sv > comb-slang.log 2>&1
 python3 -I - final-check/run-log.jsonl <<'PYTHON'
 import json
 import sys
@@ -195,6 +198,20 @@ if check["verified"] == 0 or check["checked"] != sum(check[field] for field in o
     raise SystemExit(f"{path}: inconsistent final check counts: {check}")
 PYTHON
 
+# Exercise both clock inference and an explicit override with legal RTL.
+cat > sample/clocked_xor.sv <<'SV'
+module clocked_xor(input clk, sample, a, b, output y);
+  assign y = a ^ b;
+endmodule
+SV
+for clock in clk sample; do
+    options=()
+    if [[ $clock == sample ]]; then options+=(--clock "$clock"); fi
+    run 0 "$clock.log" "$smart" --no-discover-siblings sample/clocked_xor.sv         --simulator iverilog --cycles 2 --traces 1 --seed 1 --refine 5         --no-blockified -j 1 --keep-work --workdir "$clock" -o "$clock.sv" "${options[@]}"
+    grep -Fq "    assert property (@(posedge $clock) " "$clock.sv"
+    "$slang" --top clocked_xor "$clock.sv" > "$clock-slang.log" 2>&1
+done
+
 # Omitted top follows EBMC resolution, even when the first input is a
 # package and the file that declares the module has a different name.
 for name in one-file mining; do
@@ -204,7 +221,7 @@ for name in one-file mining; do
 done
 cat > sample/second.sv <<'SV'
 module second(input a);
-  p: assert property (a == a);
+  always_comb p: assert (a == a);
 endmodule
 SV
 sed '/^rtl.sv$/a second.sv' sample/mining.salt > sample/ambiguous.salt

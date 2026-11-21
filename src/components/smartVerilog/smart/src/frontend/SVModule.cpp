@@ -1,5 +1,6 @@
 #include "SVModule.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <regex>
@@ -601,13 +602,20 @@ std::string injectAssumes(const std::string& text, const std::string& top,
     return text.substr(0, end) + block + text.substr(end);
 }
 
+std::optional<std::string> guessClock(const std::vector<std::string>& inputPorts) {
+    for (const auto& candidate : kClockNames)
+        if (std::find(inputPorts.begin(), inputPorts.end(), candidate) != inputPorts.end())
+            return candidate;
+    return std::nullopt;
+}
+
 std::optional<std::string> guessClock(const ModuleInfo& info,
                                       const std::string& configured) {
     if (!configured.empty()) return configured;
-    for (const auto& cand : kClockNames)
-        for (const auto& p : info.ports)
-            if (p.dir == "input" && p.name == cand) return cand;
-    return std::nullopt;
+    std::vector<std::string> inputPorts;
+    for (const auto& port : info.ports)
+        if (port.dir == "input") inputPorts.push_back(port.name);
+    return guessClock(inputPorts);
 }
 
 std::optional<ResetInfo> guessReset(const ModuleInfo& info,

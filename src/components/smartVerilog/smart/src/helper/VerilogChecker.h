@@ -60,7 +60,7 @@ class VerilogChecker {
         void setUnboundCheck(bool);
         void setTopModule(std::string);
         void setInjectModule(std::string);
-        void setModuleTime(std::string);
+        void setClock(std::string);
         void setHomePath(std::string);
         Constrains fixupConstrains(Constrains);
         void setSignals(std::vector<Signal>*);
@@ -87,7 +87,7 @@ class VerilogChecker {
         // --top <design top> while the invariant belongs to whichever module
         // its variables live in. Empty means "same as topModule".
         std::string injectModule;
-        std::string moduleTime;
+        std::string clock;
 
         std::vector<std::string> properties;
         std::vector<PropertyType> propertyTypes;

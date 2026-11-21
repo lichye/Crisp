@@ -246,6 +246,8 @@ ExitCode Pipeline::run(RunSummary& summary) {
 
     // Resolve the exact trace scope and the source module separately. The
     // property is inserted into the module, so EBMC checks every instance.
+    const auto clock = frontend::guessClock(info, options_.getString("clock")).value_or("");
+    auto assertionClock = clock;
     std::string mineModule = top;
     std::string injectModule = top;
     if (!requestedModule.empty() && requestedModule != top) {
@@ -273,6 +275,11 @@ ExitCode Pipeline::run(RunSummary& summary) {
         }
         mineModule = top + "." + selected->path;
         injectModule = selected->module;
+        // A property written into a child can only sample a clock in that
+        // module's scope. Prefer the selected design clock when it is a port.
+        if (std::find(selected->inputs.begin(), selected->inputs.end(), clock) ==
+            selected->inputs.end())
+            assertionClock = frontend::guessClock(selected->inputs).value_or("");
         say("[" + timestamp() + "] mining instance " + mineModule +
             ", writing into module " + injectModule);
     }
@@ -298,8 +305,7 @@ ExitCode Pipeline::run(RunSummary& summary) {
         for (const auto& file : designFiles) {
             auto source = readFile(file);
             if (file == assumeTarget)
-                source = frontend::injectAssumes(source, top, assumes,
-                                                 options_.getString("clock"));
+                source = frontend::injectAssumes(source, top, assumes, clock);
             const auto name = fs::path(file).filename().string();
             const auto copy = work.verilogDir() + "/" + name;
             if (std::find(workdirDesign.begin(), workdirDesign.end(), copy) != workdirDesign.end())
@@ -308,7 +314,9 @@ ExitCode Pipeline::run(RunSummary& summary) {
             workdirDesign.push_back(copy);
             writeFile(work.formalDir() + "/" + name, source);
         }
-        writeFile(work.effectiveConfigFile(), options_.toJson());
+        auto blockOptions = options_;
+        blockOptions.set("clock", assertionClock);
+        writeFile(work.effectiveConfigFile(), blockOptions.toJson());
         // Start fresh: a stale log from a previous run in the same workdir
         // would be worse than none.
         std::error_code error;
@@ -846,6 +854,7 @@ ExitCode Pipeline::run(RunSummary& summary) {
         emit::CheckOptions check;
         check.topModule = top;
         check.injectModule = injectModule;
+        check.clock = assertionClock;
         check.bound = static_cast<int>(options_.getInt("bound"));
         check.unbounded = finalUnbounded;
         check.timeoutSeconds = static_cast<int>(options_.getInt("check_timeout"));
@@ -929,7 +938,7 @@ ExitCode Pipeline::run(RunSummary& summary) {
                                   : emit::VerificationMode::Bounded);
         emit::writeAssertionFile(sourceForOutput, output, injectModule, verified,
                                  options_.toJson(), verification,
-                                 static_cast<int>(options_.getInt("bound")));
+                                 static_cast<int>(options_.getInt("bound")), assertionClock);
     } catch (const std::exception& e) {
         std::cerr << "smart: cannot write " << output << ": " << e.what() << "\n";
         summary.workDirKept = true;

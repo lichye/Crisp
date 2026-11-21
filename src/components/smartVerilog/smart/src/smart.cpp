@@ -160,6 +160,7 @@ int runSmartBlock(int argc, char* argv[]){
   checker->setDesignFiles(designFiles);
   checker->setTopModule(moduleName);
   checker->setInjectModule(injectModule);
+  checker->setClock(options.getString("clock"));
   checker->setTimer(timer);
   checker->setBound(boundedDepth);
   checker->setReachabilityBound(

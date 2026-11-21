@@ -30,6 +30,7 @@ struct ElaboratedInstance {
     std::string path;  // Dotted path below the top.
     std::string module;
     std::vector<FreeReg> freeRegs;
+    std::vector<std::string> inputs;
 };
 
 // Parse and elaborate the design, reporting errors to the caller.
