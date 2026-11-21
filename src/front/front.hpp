@@ -59,7 +59,8 @@ struct Task {
     std::vector<Setting<Parameter>> params;
     Setting<Mode> mode{Mode::automatic, {}};
     Setting<Level> level{Level::automatic, {}};
-    Setting<ToolUse> smart{ToolUse::on, {}}, veval{ToolUse::on, {}};
+    // SMART and veval run only when written (spec 25, 1.9; spec 1 table).
+    Setting<ToolUse> smart{ToolUse::off, {}}, veval{ToolUse::off, {}};
     Setting<Undriven> undriven{Undriven::seq, {}};
     // strict: slang checks the RTL before EBMC and SMART (spec 23).
     Setting<RtlMode> rtl_mode{RtlMode::strict, {}};
