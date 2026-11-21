@@ -1251,6 +1251,7 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
                                  const namespacet& ns,
                                  const ModuleSpecOptions& options) {
     ModuleSpecStats stats;
+    const auto sync = options.syncPerFile ? util::AtomicOutputSync::PerFile : util::AtomicOutputSync::Deferred;
 
     // Share prerequisite lookups across all products in this run.
     std::map<std::string, std::string> declarationCache;
@@ -1381,7 +1382,7 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
                     writeBlockedNote(notes, options, *row);
                 }
                 writeAggregateBreakdown(notes, entries.byClass, notListed);
-            }, util::AtomicOutputSync::Deferred);
+            }, sync);
             writtenNotes.insert(notesName);
             stats.notes++;
         }
@@ -1771,7 +1772,7 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
             prerequisites(text.substr(headerEnd), options, declarationCache), wrapper);
         util::writeAtomic(path.string(), [&](std::ostream& file) {
             file << text.substr(0, headerEnd) << block << text.substr(headerEnd);
-        }, util::AtomicOutputSync::Deferred);
+        }, sync);
         if (!block.empty()) stats.prerequisite++;
         writtenSpecs.insert(wrapper + ".sv");
         stats.specFiles.push_back(path.string());
@@ -1804,7 +1805,7 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
     std::vector<std::string> outputDirectories{options.outDir};
     if (std::filesystem::is_directory(tier2Dir))
         outputDirectories.push_back(tier2Dir.string());
-    util::syncAtomicOutputDirectories(outputDirectories);
+    util::syncAtomicOutputDirectories(outputDirectories, sync);
 
     return stats;
 }
