@@ -87,6 +87,9 @@ struct ProofLine {
 // Key a saved annotation by instance and source property.
 std::string proofKey(const std::string& instance, const std::string& property);
 
+// Resolve specialized port types once for product admission and rendering.
+void prepareLocalPortTypes(std::vector<InstanceEdge>&, const namespacet&);
+
 // Shared admission test for product generation and result views.
 bool isTier1(const PropertyLanding&);
 

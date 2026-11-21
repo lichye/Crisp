@@ -89,6 +89,14 @@ struct InstanceEdge {
     // Declared port names; bindings may also contain internal assignments.
     std::set<std::string> ports;
     std::set<std::string> inputs;
+
+    // Local-product declarations use these spellings for non-flat port types.
+    struct ProductPortType {
+        std::string prefix, suffix;
+        std::string scope, name, declarationFile;
+    };
+    std::map<std::string, ProductPortType> productPortTypes;
+    std::string productPortError;
 };
 
 // Compare names, types and parameter values with a standalone elaboration.

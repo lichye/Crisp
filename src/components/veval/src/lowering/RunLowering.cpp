@@ -165,6 +165,8 @@ int runLowering(const CommandLineOptions& invocation) {
         return veval::lowering::blackboxInstances(
             design.transitionSystem(), edges, invocation.generationThreads.value_or(1));
     });
+    namespacet ns(design.transitionSystem().symbol_table);
+    veval::lowering::prepareLocalPortTypes(edges, ns);
     std::vector<veval::lowering::StoppedAbove> stoppedAbove;
     auto transports = generation::timed("transport.initial", [&] {
         return veval::lowering::lowerProperties(set, edges, aliases, attribution, blackboxes,
@@ -209,7 +211,6 @@ int runLowering(const CommandLineOptions& invocation) {
         veval::lowering::writeText(transports, std::cout);
 
     // Share the same environment between products and saved-result matching.
-    namespacet ns(design.transitionSystem().symbol_table);
     auto environment = generation::timed("environment", [&] {
         return veval::environment::environment(
             transports, edges, design.transitionSystem(), ns);

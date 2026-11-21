@@ -42,6 +42,13 @@ if(BUILD_TESTING)
                 "-DTOP=${top}" "-DDESIGN=${CMAKE_CURRENT_SOURCE_DIR}/test/mixed_array_drivers.sv"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/test/RejectMixedArrayDrivers.cmake")
     endforeach()
+    set(veval_test_ebmc "${hwcbmc_src}/ebmc/ebmc")
+    if(EXISTS "${veval_test_ebmc}")
+        add_test(NAME veval.aggregate_port_product
+            COMMAND "${CMAKE_COMMAND}" "-DVEVAL=$<TARGET_FILE:veval>"
+                "-DEBMC=${veval_test_ebmc}" "-DFIXTURES=${CMAKE_CURRENT_SOURCE_DIR}/test"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/test/AggregatePortProduct.cmake")
+    endif()
 endif()
 
 add_library(veval_sva STATIC ${VEVAL_SRC}/frontend/sva/PropertyMonitor.cpp
