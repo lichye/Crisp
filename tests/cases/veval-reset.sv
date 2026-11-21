@@ -12,3 +12,12 @@ module reset_top(input clk, input rst, input [3:0] a);
 `endif
     reset_child u_child(.clk(clk), .rst(rst), .a(a));
 endmodule
+
+module alias_middle(input sample_clk, sample_rst, input [3:0] a);
+    reset_child u_leaf(.clk(sample_clk), .rst(sample_rst), .a(a));
+endmodule
+
+module alias_top(input board_clk, board_rst, input [3:0] a);
+    alias_middle u_mid(.sample_clk(board_clk), .sample_rst(board_rst), .a(a));
+    p_parent: assert property (@(posedge board_clk) disable iff (board_rst) u_mid.u_leaf.r < 4'd8);
+endmodule
