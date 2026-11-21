@@ -22,6 +22,9 @@
 #include <system_error>
 
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 namespace crisp::check {
 namespace {
@@ -79,7 +82,7 @@ void set_memory_limit(std::uint64_t mib) {
 }
 
 [[noreturn]] void worker(const front::Task& task, const fs::path& scratch, Reporter reporter,
-                         EngineRun operation, const std::set<std::string>& skip) {
+                         EngineRun operation, Deadline deadline, const std::set<std::string>& skip) {
     int status = 2;
     try {
 #ifndef __APPLE__
@@ -93,7 +96,7 @@ void set_memory_limit(std::uint64_t mib) {
         const struct rlimit no_core{0, 0};
         if (::setrlimit(RLIMIT_CORE, &no_core) < 0) throw os_error("disable task core dumps");
         if (task.ram_mib) set_memory_limit(task.ram_mib->value);
-        if (run_engine(task, scratch, reporter, operation, skip)) status = 0;
+        if (run_engine(task, scratch, reporter, operation, deadline, skip)) status = 0;
     } catch (const std::bad_alloc&) {
         std::fputs("EBMC exhausted available memory\n", stderr);
     } catch (const std::exception& error) {
@@ -121,7 +124,7 @@ veval::util::GroupWait run_worker(const front::Task& task, const fs::path& scrat
     if (pid < 0) throw os_error("start EBMC");
     if (pid == 0) {
         pipe.close_end(0);
-        worker(task, scratch, {pipe.fd[1]}, operation, skip);
+        worker(task, scratch, {pipe.fd[1]}, operation, deadline, skip);
     }
     pipe.close_end(1);
     const auto wait = veval::util::waitForProofContext(pid, deadline, std::chrono::milliseconds(5),
@@ -480,7 +483,7 @@ std::string first_line(const fs::path& file) {
 
 struct VevalResult {
     std::vector<Property> lines;   // one per assertion veval saw, in source order
-    std::set<std::string> decided; // proved or passed by a local check
+    std::set<std::string> decided; // conclusive local verdicts
     bool failed = false, timed_out = false;
 };
 
@@ -619,25 +622,34 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
         local.veval = {front::ToolUse::off, {}};
         std::string local_events;
         const auto wait = run_worker(local, dir, deadline, local_events, EngineRun::solve);
-        if (wait.timedOut) {
-            result.timed_out = true;
-            break;
-        }
         const auto checked = read_events(local_events);
         std::string status = "error", detail = "EBMC returned no result";
         if (checked.properties.size() == 1 && checked.properties.front().status != "pending") {
             status = checked.properties.front().status;
             detail = checked.properties.front().detail;
         }
+        if (wait.timedOut) {
+            result.timed_out = true;
+            if (status == "checking")
+                notes[job.property].push_back(job.instance + ": " + detail + "; vacuity check timed out");
+            break;
+        }
         if (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0) {
-            status = "error";
-            detail = "EBMC failed: " + first_line(dir / "diagnostics.log");
+            if (status == "checking") {
+                status = "unknown";
+                detail += "; vacuity check failed: " + first_line(dir / "diagnostics.log");
+            } else {
+                status = "error";
+                detail = "EBMC failed: " + first_line(dir / "diagnostics.log");
+            }
         }
         if (status == "proved") {
             decided[job.property] = {job.property, "proved", "proved in " + job.instance + " (veval)" + without(job.instance)};
         } else if (status == "passed") {
             decided[job.property] = {job.property, "passed",
                                      "passed in " + job.instance + " (veval), " + detail + without(job.instance)};
+        } else if (status == "vacuous") {
+            decided[job.property] = {job.property, status, detail + " in " + job.instance + " (veval)" + without(job.instance)};
         } else if (status == "refuted") {
             const auto wave = task_output_dir(task) / "veval" / file_name(job.property) / (file_name(job.instance) + ".vcd");
             fs::create_directories(wave.parent_path());
@@ -672,6 +684,7 @@ void print_line(const Property& p, Summary& summary, Clock::time_point start) {
     if (p.status == "proved") ++summary.proved;
     else if (p.status == "passed") ++summary.passed;
     else if (p.status == "refuted") ++summary.refuted;
+    else if (p.status == "vacuous") ++summary.vacuous;
     else ++summary.unknown;
     const std::chrono::duration<double> elapsed = Clock::now() - start;
     std::cout << "  " << p.name << "  " << p.status << "  " << std::fixed << std::setprecision(3) << elapsed.count()
@@ -680,6 +693,64 @@ void print_line(const Property& p, Summary& summary, Clock::time_point start) {
     std::cout << '\n';
 }
 } // namespace
+
+void run_sampling(Deadline deadline, const std::function<void(const Witness&)>& search, const Witness& observed) {
+    if (Clock::now() >= deadline) return;
+    Pipe pipe;
+    if (::fcntl(pipe.fd[0], F_SETFL, O_NONBLOCK) < 0) throw os_error("configure sampling pipe");
+#ifdef __linux__
+    const auto parent = ::getpid();
+#endif
+    const auto pid = ::fork();
+    if (pid < 0) throw os_error("start random traces");
+    if (pid == 0) {
+        pipe.close_end(0);
+        if (::setpgid(0, 0) < 0) ::_exit(2);
+#ifdef __linux__
+        // This group is nested inside the task. If its supervising worker
+        // dies first, kill the entire group, including an external SMT solver.
+        if (::signal(SIGUSR1, [](int) { ::kill(0, SIGKILL); }) == SIG_ERR ||
+            ::prctl(PR_SET_PDEATHSIG, SIGUSR1) < 0 || ::getppid() != parent) ::_exit(2);
+#endif
+        try {
+            search([&](std::size_t index) {
+                if (Clock::now() >= deadline) ::_exit(0);
+                ssize_t count;
+                do { count = ::write(pipe.fd[1], &index, sizeof(index)); } while (count < 0 && errno == EINTR);
+                if (count != sizeof(index)) ::_exit(2);
+            });
+            ::_exit(0);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "random traces: %s\n", e.what());
+        } catch (...) {
+            std::fputs("random traces: engine failure\n", stderr);
+        }
+        std::fflush(stderr);
+        ::_exit(1);
+    }
+    pipe.close_end(1);
+    // Each index is one atomic write, smaller than PIPE_BUF. Drain at every
+    // poll and once after reaping to retain hits that preceded cancellation.
+    auto drain = [&] {
+        std::size_t index;
+        for (;;) {
+            const auto count = ::read(pipe.fd[0], &index, sizeof(index));
+            if (count == sizeof(index)) observed(index);
+            else if (count == 0 || (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) return;
+            else if (count >= 0 || errno != EINTR) throw std::runtime_error("invalid random trace result");
+        }
+    };
+    const auto wait = veval::util::waitForProcessGroup(pid, deadline, std::chrono::milliseconds(1), drain);
+    drain();
+    if (!wait.error.empty()) throw std::runtime_error(wait.error);
+    if (wait.timedOut) {
+        std::fputs("random traces: opportunity budget expired\n", stderr);
+        std::fflush(stderr);
+    } else if (WIFSIGNALED(wait.status)) {
+        std::fprintf(stderr, "random traces: terminated by signal %d\n", WTERMSIG(wait.status));
+        std::fflush(stderr);
+    }
+}
 
 void Reporter::send(std::size_t index, const char* status, const std::string& detail) const {
     std::ostringstream record;
@@ -755,8 +826,10 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     }
     auto& properties = reports.properties;
     bool diagnostics = failed;
+    const bool checking = std::any_of(properties.begin(), properties.end(),
+                                      [](const auto& p) { return p.status == "checking"; });
     if (failed) {
-        summary.error = true;
+        if (!checking) summary.error = true;
         if (!wait.timedOut && WIFSIGNALED(wait.status))
             std::cerr << "crisp: EBMC terminated by signal " << WTERMSIG(wait.status) << '\n';
     }
@@ -771,6 +844,13 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
             if (publish_file(scratch.path / (std::to_string(i) + ".vcd"), dest, deadline))
                 p.detail = dest.string();
             else { p.status = "unknown"; p.detail = timeout; }
+        }
+        if (p.status == "checking") {
+            p.status = "unknown";
+            if (wait.timedOut) p.detail += "; vacuity check timed out";
+            else if (WIFSIGNALED(wait.status))
+                p.detail += "; vacuity check terminated by signal " + std::to_string(WTERMSIG(wait.status));
+            else p.detail += "; vacuity check failed";
         }
         if (p.status == "pending") {
             p.status = wait.timedOut || failed ? "unknown" : "error";

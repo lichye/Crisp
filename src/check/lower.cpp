@@ -3,6 +3,7 @@
 // writing one product per landing instance into the task's scratch directory.
 // Built in ebmc.mk with the engine's flags.
 #include "engine.hpp"
+#include "vacuity.hpp"
 
 #include <frontend/rtl/ElaboratedDesign.h>
 #include <frontend/sva/PropertyMonitor.h>
@@ -53,6 +54,16 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
         if (item.isAssumption || item.isResetContract || !selected(item.property)) continue;
         reporter.send(index, "pending", item.property);
         reporter.send(index++, "unlowered", "veval cannot encode it: " + item.reason);
+    }
+
+    // veval normally prints the normalized formula, where |=> can already
+    // be an OR and |-> a property-level "implies". Carry the elaborated
+    // implication through the same port/slice substitutions into the product
+    // so the local solver can identify its antecedent just as at the top.
+    for (auto& monitor : set.monitors) {
+        if (monitor.isAssumption || monitor.isResetContract || monitor.hasLocalVariables) continue;
+        if (auto sentence = local_implication(monitor.originalProperty))
+            monitor.sourceProperty = std::move(*sentence);
     }
 
     const auto lowered = lowering::lowerDesign(design, set, lowering::LoweringConfig{});
