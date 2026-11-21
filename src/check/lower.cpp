@@ -129,6 +129,21 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
         if (!row.stopReason.empty()) reason += ", " + row.stopReason;
         reporter.send(0, "missing", row.instance + '\t' + row.property + '\t' + reason);
     }
+    // [design] reset NAME (spec 25, 2.4.5): the input port of each checked
+    // instance on the same net as the top's NAME gets the reset in its check.
+    if (task.reset) {
+        const auto reset = net(task.top->value + "." + task.reset->value.signal);
+        for (const auto& edge : edges) {
+            if (!checked.count(edge.instance)) continue;
+            for (const auto& binding : edge.bindings) {
+                const auto port = strip(id2string(binding.port.get_identifier()));
+                const auto prefix = edge.instance + ".";
+                if (binding.isOutput || port.compare(0, prefix.size(), prefix) != 0 || net(port) != reset) continue;
+                reporter.send(0, "reset", edge.instance + '\t' + port.substr(prefix.size()));
+                break;
+            }
+        }
+    }
     // A reset contract that gives a checked instance no initial-state premise
     // leaves its check without the reset.
     for (const auto& monitor : set.monitors) {

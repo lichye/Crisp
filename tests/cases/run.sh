@@ -448,6 +448,21 @@ has 'veval-unreadable.sv line 3' err
 # A struct port read field by field: the product keeps the port's type.
 run 0 veval struct
 has 'proved in struct_top.u_child (veval)'
+# veval's local environment (spec 25, 2.4): an observed internal register,
+# a reset asserted at the initial instant, and a clamp on an input.
+run 0 veval observe
+has 'proved in observe_top.u_child (veval)'
+run 0 veval reset
+has 'proved in reset_top.u_child (veval)'
+run 0 veval clamp
+has 'proved in clamp_top.u_child (veval)'
+# [design] reset (spec 25, 2.4.5) resets the landing's input on the same net.
+run 0 veval salt_reset
+has 'proved in reset_top.u_child (veval)'
+run 3 veval no_reset
+has 'local counterexample in reset_top.u_child'
+run 0 veval unconnected
+has 'proved in unreset_top.u_child (veval); checked without reset: no input of unreset_top.u_child is connected to rst'
 # Without a veval line the task runs as before.
 run 0 token prove
 if grep -Fq 'not connected' out; then

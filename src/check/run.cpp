@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -171,6 +172,7 @@ struct Property {
 struct TaskEvents {
     std::vector<Property> properties;
     std::vector<std::string> missing; // veval: "instance\tassumption\treason"
+    std::vector<std::string> resets;  // veval: "instance\tport on the net of [design] reset"
     std::vector<std::string> undriven;
 };
 
@@ -186,6 +188,8 @@ TaskEvents read_events(const std::string& events) {
             result.undriven.push_back(detail);
         else if (status == "missing")
             result.missing.push_back(detail);
+        else if (status == "reset")
+            result.resets.push_back(detail);
         else if (status == "pending" && index == properties.size())
             properties.push_back({detail, status, {}});
         else {
@@ -413,7 +417,8 @@ struct VevalJob {
     std::string property, instance, wrapper, label;
     fs::path product;
     std::size_t depth = 0;
-    std::string unsupported; // what the check needs that Crisp does not give its engine yet
+    std::string clock;                 // the product's sampling clock
+    std::vector<std::string> premises; // the local environment veval derived (reset, clamps)
 };
 
 // veval writes one SystemVerilog product per instance. Its comments name the
@@ -428,7 +433,8 @@ std::vector<VevalJob> read_products(const fs::path& dir) {
     std::sort(files.begin(), files.end());
     static const std::regex instance(R"(^// instance:\s*(\S+))"), depth(R"(^// depth:\s*(\d+))"),
         module(R"(^module\s+(\w+))"), from(R"(^\s*// from:\s*(\S+))"),
-        assertion(R"(^\s*(\w+):\s*assert\s+property\b)");
+        assertion(R"(^\s*(\w+):\s*assert\s+property\b)"), premise(R"(^\s*// premise: (.*)$)"),
+        clock(R"(@\(posedge\s+(\w+)\))");
     std::vector<VevalJob> jobs;
     for (const auto& file : files) {
         std::ifstream in(file);
@@ -436,7 +442,6 @@ std::vector<VevalJob> read_products(const fs::path& dir) {
         product.product = fs::absolute(file);
         std::vector<std::pair<std::string, std::string>> labels; // (source property, label)
         std::string source;
-        bool observation = false, premise = false;
         std::smatch match;
         for (std::string line; std::getline(in, line);) {
             if (std::regex_search(line, match, instance)) product.instance = match[1];
@@ -444,11 +449,10 @@ std::vector<VevalJob> read_products(const fs::path& dir) {
             else if (product.wrapper.empty() && std::regex_search(line, match, module)) product.wrapper = match[1];
             else if (std::regex_search(line, match, from)) source = match[1];
             else if (std::regex_search(line, match, assertion)) labels.emplace_back(source, match[1]);
-            if (line.rfind("// observation:", 0) == 0) observation = true;
-            if (line.find("// premise:") != std::string::npos) premise = true;
+            else if (std::regex_search(line, match, premise)) product.premises.push_back(match[1]);
+            // Internal observations are written as u_dut.<name>, which the engine reads directly.
+            if (product.clock.empty() && std::regex_search(line, match, clock)) product.clock = match[1];
         }
-        if (observation) product.unsupported = "internal observation";
-        else if (premise) product.unsupported = "an environment premise (reset or clamp)";
         for (const auto& [property, label] : labels) {
             auto job = product;
             job.property = property;
@@ -496,9 +500,18 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
         list += (list.empty() ? "" : ", ") + record.substr(tab + 1, second - tab - 1) + " (" +
                 record.substr(second + 1) + ")";
     }
+    std::map<std::string, std::string> reset_ports; // instance -> its input on the net of [design] reset
+    for (const auto& record : lowering.resets) {
+        const auto tab = record.find('\t');
+        reset_ports[record.substr(0, tab)] = record.substr(tab + 1);
+    }
     const auto without = [&](const std::string& instance) {
-        const auto found = missing.find(instance);
-        return found == missing.end() ? std::string() : "; checked without assumption " + found->second;
+        std::string text;
+        if (const auto found = missing.find(instance); found != missing.end())
+            text += "; checked without assumption " + found->second;
+        if (task.reset && !reset_ports.count(instance))
+            text += "; checked without reset: no input of " + instance + " is connected to " + task.reset->value.signal;
+        return text;
     };
 
     const auto jobs = read_products(scratch / "veval");
@@ -538,22 +551,64 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             result.timed_out = true;
             break;
         }
-        if (!job.unsupported.empty()) {
-            notes[job.property].push_back(job.instance + ": no local conclusion, its check needs " + job.unsupported +
-                                          ", which Crisp does not support yet");
+        // veval's local environment (spec 25, 2.4): a reset asserted at the initial
+        // instant becomes Crisp's reset; a clamp becomes an assumption in every state.
+        static const std::regex reset(R"(^reset asserted at the initial instant, from `[^']*' \(predicate: ([!~]?)(\w+)\)$)"),
+            clamp(R"(^(\w+) <= (\S+) \(the parent drives it through a clamp\)$)");
+        std::optional<front::Reset> initial_reset;
+        std::vector<std::string> clamps;
+        std::string unsupported;
+        for (const auto& premise : job.premises) {
+            std::smatch match;
+            if (std::regex_match(premise, match, reset) && !initial_reset)
+                initial_reset = front::Reset{match[2], match[1].length() ? front::Polarity::low : front::Polarity::high};
+            else if (std::regex_match(premise, match, clamp))
+                clamps.push_back(match[1].str() + " <= " + match[2].str());
+            else {
+                unsupported = "premise `" + premise + "'";
+                break;
+            }
+        }
+        if (!clamps.empty() && job.clock.empty()) unsupported = "clamps without a sampling clock";
+        // [design] reset reaches this instance through one of its inputs.
+        if (const auto port = reset_ports.find(job.instance); task.reset && port != reset_ports.end()) {
+            const front::Reset salt_reset{port->second, task.reset->value.polarity};
+            if (initial_reset && (initial_reset->signal != salt_reset.signal || initial_reset->polarity != salt_reset.polarity))
+                unsupported = "two different resets (" + initial_reset->signal + " and " + salt_reset.signal + ")";
+            initial_reset = salt_reset;
+        }
+        if (!unsupported.empty()) {
+            notes[job.property].push_back(job.instance + ": no local conclusion, Crisp cannot state its " + unsupported);
             continue;
         }
+        const auto dir = scratch / "veval" / ("check" + std::to_string(checks++));
+        fs::create_directories(dir);
+        auto product = job.product;
+        if (!clamps.empty()) {
+            // A copy of the product with the clamps as assumptions, before the wrapper's endmodule.
+            std::ifstream in(job.product);
+            std::ostringstream text;
+            text << in.rdbuf();
+            auto body = text.str();
+            const auto end = body.rfind("endmodule");
+            std::string assumptions;
+            for (std::size_t i = 0; i < clamps.size(); ++i)
+                assumptions += "  crisp_clamp_" + std::to_string(i) + ": assume property (@(posedge " + job.clock + ") " +
+                               clamps[i] + ");\n";
+            body.insert(end == std::string::npos ? body.size() : end, assumptions);
+            product = dir / job.product.filename();
+            std::ofstream(product) << body;
+        }
         auto local = task;
-        local.files.push_back({job.product, task.veval.source});
+        local.files.push_back({product, task.veval.source});
         local.top = front::Setting<std::string>{job.wrapper, task.veval.source};
         local.reset.reset();
+        if (initial_reset) local.reset = front::Setting<front::Reset>{*initial_reset, task.veval.source};
         local.clock.reset();
         local.params.clear();
         local.properties = {{job.wrapper + "." + job.label, task.veval.source}};
         local.smart = {front::ToolUse::off, {}};
         local.veval = {front::ToolUse::off, {}};
-        const auto dir = scratch / "veval" / ("check" + std::to_string(checks++));
-        fs::create_directories(dir);
         std::string local_events;
         const auto wait = run_worker(local, dir, deadline, local_events, EngineRun::solve);
         if (wait.timedOut) {
