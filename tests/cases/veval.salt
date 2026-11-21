@@ -14,6 +14,9 @@ struct
 observe
 reset
 clamp
+salt_reset
+no_reset
+unconnected
 
 [files]
 assumed: veval-assumed.sv
@@ -31,6 +34,9 @@ struct: veval-struct.sv
 observe: veval-observe.sv
 reset: veval-reset.sv
 clamp: veval-clamp.sv
+salt_reset: veval-reset.sv
+no_reset: veval-reset.sv
+unconnected: veval-unreset.sv
 
 [design]
 assumed: top assumed_top
@@ -49,6 +55,13 @@ struct: top struct_top
 observe: top observe_top
 reset: top reset_top
 clamp: top clamp_top
+salt_reset: top reset_top
+salt_reset: define NO_CONTRACT
+salt_reset: reset rst high
+no_reset: top reset_top
+no_reset: define NO_CONTRACT
+unconnected: top unreset_top
+unconnected: reset rst high
 
 [options]
 veval only

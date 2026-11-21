@@ -172,6 +172,7 @@ struct Property {
 struct TaskEvents {
     std::vector<Property> properties;
     std::vector<std::string> missing; // veval: "instance\tassumption\treason"
+    std::vector<std::string> resets;  // veval: "instance\tport on the net of [design] reset"
     std::vector<std::string> undriven;
 };
 
@@ -187,6 +188,8 @@ TaskEvents read_events(const std::string& events) {
             result.undriven.push_back(detail);
         else if (status == "missing")
             result.missing.push_back(detail);
+        else if (status == "reset")
+            result.resets.push_back(detail);
         else if (status == "pending" && index == properties.size())
             properties.push_back({detail, status, {}});
         else {
@@ -497,9 +500,18 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
         list += (list.empty() ? "" : ", ") + record.substr(tab + 1, second - tab - 1) + " (" +
                 record.substr(second + 1) + ")";
     }
+    std::map<std::string, std::string> reset_ports; // instance -> its input on the net of [design] reset
+    for (const auto& record : lowering.resets) {
+        const auto tab = record.find('\t');
+        reset_ports[record.substr(0, tab)] = record.substr(tab + 1);
+    }
     const auto without = [&](const std::string& instance) {
-        const auto found = missing.find(instance);
-        return found == missing.end() ? std::string() : "; checked without assumption " + found->second;
+        std::string text;
+        if (const auto found = missing.find(instance); found != missing.end())
+            text += "; checked without assumption " + found->second;
+        if (task.reset && !reset_ports.count(instance))
+            text += "; checked without reset: no input of " + instance + " is connected to " + task.reset->value.signal;
+        return text;
     };
 
     const auto jobs = read_products(scratch / "veval");
@@ -558,6 +570,13 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             }
         }
         if (!clamps.empty() && job.clock.empty()) unsupported = "clamps without a sampling clock";
+        // [design] reset reaches this instance through one of its inputs.
+        if (const auto port = reset_ports.find(job.instance); task.reset && port != reset_ports.end()) {
+            const front::Reset salt_reset{port->second, task.reset->value.polarity};
+            if (initial_reset && (initial_reset->signal != salt_reset.signal || initial_reset->polarity != salt_reset.polarity))
+                unsupported = "two different resets (" + initial_reset->signal + " and " + salt_reset.signal + ")";
+            initial_reset = salt_reset;
+        }
         if (!unsupported.empty()) {
             notes[job.property].push_back(job.instance + ": no local conclusion, Crisp cannot state its " + unsupported);
             continue;
