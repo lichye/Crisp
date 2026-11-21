@@ -40,6 +40,15 @@ has() {
     fi
 }
 
+# Two waveforms are the same apart from the $date block, which EBMC fills with the
+# current time to the second.
+same_vcd() {
+    if ! cmp -s <(sed '/^\$date/,/^\$end/d' "$1") <(sed '/^\$date/,/^\$end/d' "$2"); then
+        echo "waveforms differ: $1 $2" >&2
+        exit 1
+    fi
+}
+
 valid_vcd() {
     awk '
         $1 == "$scope" {depth++}
@@ -103,7 +112,7 @@ for mode in bmc kind pdr bmc_word kind_word; do
 done
 # level word (spec 19) agrees with the bit level, including the waveform.
 for mode in bmc kind; do
-    cmp "crisp-out/reset-low_$mode/top.p.vcd" "crisp-out/reset-low_${mode}_word/top.p.vcd"
+    same_vcd "crisp-out/reset-low_$mode/top.p.vcd" "crisp-out/reset-low_${mode}_word/top.p.vcd"
 done
 for mode in bmc bmc_word; do
     run 0 reset-high "$mode"
@@ -293,7 +302,7 @@ for task in ram_word ram_auto; do
     # The memory element 5 is written in cycle 5 and read as nonzero in cycle 6.
     [[ $(grep '^#' "crisp-out/level-word_$task/ram_word.p_untouched.vcd" | tail -n 1) == '#6' ]]
 done
-cmp crisp-out/level-word_ram_word/ram_word.p_untouched.vcd crisp-out/level-word_ram_auto/ram_word.p_untouched.vcd
+same_vcd crisp-out/level-word_ram_word/ram_word.p_untouched.vcd crisp-out/level-word_ram_auto/ram_word.p_untouched.vcd
 # The SMT formulas go to the task's scratch directory, not to TMPDIR or /tmp.
 [[ -z $(ls -A empty-tmp) ]]
 if [[ -n $(find /tmp -maxdepth 1 -newer "$marker" -name 'smt2_dec_*' 2>/dev/null) ]]; then
