@@ -90,6 +90,7 @@ void merge(Task& task, const Task& common) {
     merge_list(task.includes, common.includes);
     merge_list(task.defines, common.defines);
     merge_list(task.params, common.params);
+    merge_list(task.properties, common.properties);
 }
 
 [[noreturn]] void conflict(const std::optional<SourceLocation>& a, const std::optional<SourceLocation>& b,
@@ -113,11 +114,22 @@ void check_options(Task& task) {
         if (task.mode.source) conflict(only, task.mode.source, prefix + " requires mode to be omitted");
         if (task.level.source) conflict(only, task.level.source, prefix + " requires level to be omitted");
         if (task.depth) conflict(only, task.depth->source, prefix + " requires depth to be omitted");
+        if (!task.properties.empty())
+            conflict(only, task.properties.front().source, prefix + " requires properties to be omitted");
     }
     const bool has_depth = mode == Mode::bmc || mode == Mode::kind;
     if (task.depth && !has_depth)
         conflict(task.depth->source, task.mode.source, "depth requires mode bmc or kind");
     if (!task.depth && has_depth) task.depth = Setting<std::uint64_t>{20, {}};
+}
+
+// After merging, the same PATTERN may not appear twice (5.1.3).
+void check_patterns(const std::vector<Setting<std::string>>& patterns) {
+    std::set<std::string> seen;
+    for (const auto& pattern : patterns) {
+        if (!seen.insert(pattern.value).second)
+            throw Diagnostic{pattern.source->line, "[options] properties: duplicate pattern '" + pattern.value + "'"};
+    }
 }
 
 template<class Named>
@@ -195,6 +207,7 @@ Result prepare_tasks(const fs::path& salt_path, const std::vector<std::string>& 
             check_options(task);
             check_names(task.defines, "define");
             check_names(task.params, "param");
+            check_patterns(task.properties);
             check_paths(task);
             if (!task.thread.source) {
                 if (!default_threads) default_threads = available_cpus();

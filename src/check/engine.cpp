@@ -19,6 +19,9 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace crisp::check {
 namespace {
@@ -66,6 +69,66 @@ cmdlinet command_line(const front::Task& task) {
     if (cmd.isset("aig") && cmd.isset("k-induction"))
         throw std::runtime_error("EBMC does not support level bit for mode kind");
     return cmd;
+}
+
+// The wildcards of properties PATTERN (spec 20): '*' matches any characters
+// except '.', '**' any characters, '?' one character except '.'. All other
+// characters, including '[' and ']', match literally.
+bool pattern_matches(std::string_view pattern, std::string_view name) {
+    enum class Kind { literal, one, star, stars };
+    std::vector<std::pair<Kind, char>> tokens;
+    for (std::size_t i = 0; i < pattern.size();) {
+        if (pattern[i] == '*') {
+            const auto run = pattern.find_first_not_of('*', i);
+            const auto end = run == pattern.npos ? pattern.size() : run;
+            tokens.emplace_back(end - i == 1 ? Kind::star : Kind::stars, '*');
+            i = end;
+        } else {
+            tokens.emplace_back(pattern[i] == '?' ? Kind::one : Kind::literal, pattern[i]);
+            ++i;
+        }
+    }
+    // rest[j]: the tokens after the current one match name[j..].
+    const auto size = name.size();
+    std::vector<char> rest(size + 1, 0), here(size + 1);
+    rest[size] = 1;
+    for (auto token = tokens.rbegin(); token != tokens.rend(); ++token) {
+        const auto [kind, c] = *token;
+        for (std::size_t j = size + 1; j-- > 0;) {
+            const bool more = j < size;
+            switch (kind) {
+            case Kind::literal: here[j] = more && name[j] == c && rest[j + 1]; break;
+            case Kind::one: here[j] = more && name[j] != '.' && rest[j + 1]; break;
+            case Kind::star: here[j] = rest[j] || (more && name[j] != '.' && here[j + 1]); break;
+            case Kind::stars: here[j] = rest[j] || (more && here[j + 1]); break;
+            }
+        }
+        std::swap(rest, here);
+    }
+    return rest[0];
+}
+
+// Disable the assertions that no PATTERN selects, as EBMC's --property does.
+// Assumptions stay in effect. Every PATTERN must select an assertion.
+void select_properties(const front::Task& task, ebmc_propertiest& properties) {
+    std::vector<bool> used(task.properties.size(), false);
+    for (auto& p : properties.properties) {
+        if (p.is_assumption()) continue;
+        const auto name = id2string(p.name);
+        bool selected = false;
+        for (std::size_t i = 0; i < task.properties.size(); ++i) {
+            if (pattern_matches(task.properties[i].value, name)) selected = used[i] = true;
+        }
+        if (!selected) p.disable();
+    }
+    for (std::size_t i = 0; i < task.properties.size(); ++i) {
+        if (used[i]) continue;
+        const auto& pattern = task.properties[i];
+        const auto& source = pattern.source.value();
+        throw std::runtime_error("crisp: " + source.file.string() + ":" + std::to_string(source.line) +
+                                 ": [options] properties: pattern '" + pattern.value +
+                                 "' matches no assertion");
+    }
 }
 
 bool refuted(const Property& p) {
@@ -189,10 +252,11 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
     if (operation == EngineRun::validate_reset) return;
     auto properties = ebmc_propertiest::from_command_line(cmd, *system, messages);
     properties.properties.remove_if([](const auto& p) { return p.is_exists_path(); });
+    if (!task.properties.empty()) select_properties(task, properties);
 
     std::map<irep_idt, std::size_t> ids;
     for (const auto& p : properties.properties) {
-        if (p.is_assumption()) continue;
+        if (p.is_assumption() || p.is_disabled()) continue;
         const auto index = ids.size();
         ids.emplace(p.identifier, index);
         reporter.send(index, "pending", id2string(p.name));
@@ -211,6 +275,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
                     throw std::runtime_error(id2string(p.name) + ": " + p.status_as_string());
                 continue;
             }
+            if (p.is_disabled()) continue;
             const auto index = ids.at(p.identifier);
             std::string verdict, reason;
             if (p.is_failure() || p.is_unsupported()) {
@@ -245,7 +310,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
     for (const auto& p : properties.properties)
         if (p.is_assumption()) assumptions.properties.push_back(p);
     for (const auto& p : properties.properties) {
-        if (p.is_assumption()) continue;
+        if (p.is_assumption() || p.is_disabled()) continue;
         auto single = assumptions;
         single.properties.push_back(p);
         check_batch(single);

@@ -1,0 +1,34 @@
+[tasks]
+one
+union
+top_only
+deep
+sub
+generate
+single
+assumed
+nomatch
+dot
+pdr
+
+[files]
+properties.sv
+
+[design]
+top top
+
+[options]
+mode bmc
+pdr: mode pdr
+one: properties top.p_one
+union: properties top.p_one
+union: properties top.p_two
+top_only: properties top.*
+deep: properties top.**
+sub: properties top.u_leaf.*
+generate: properties top.g[0].p_gen
+single: properties top.p_?ne
+assumed: properties top.p_still
+nomatch: properties top.absent*
+dot: properties top?p_one
+pdr: properties top.p_*

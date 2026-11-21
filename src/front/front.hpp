@@ -60,6 +60,8 @@ struct Task {
     Setting<ToolUse> smart{ToolUse::on, {}}, veval{ToolUse::on, {}};
     Setting<Undriven> undriven{Undriven::seq, {}};
     std::optional<Setting<std::uint64_t>> depth;
+    // [options] properties PATTERN, merged in file order; empty selects all assertions.
+    std::vector<Setting<std::string>> properties;
     Setting<std::uint64_t> thread{0, {}}, timeout_seconds{60, {}};
     std::optional<Setting<std::uint64_t>> ram_mib;
 };

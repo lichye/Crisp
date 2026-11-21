@@ -199,7 +199,11 @@ void read_setting(const SettingLine& line, Task& scope) {
         else if (key == "veval") line.set(scope.veval, choice<ToolUse>(line, tool_names));
         else if (key == "depth") line.set(scope.depth, quantity(line));
         else if (key == "undriven") line.set(scope.undriven, choice<Undriven>(line, undriven_names));
-        else line.fail("unknown key; expected mode, level, smart, veval, depth, undriven");
+        else if (key == "properties") {
+            line.expect(2, "one PATTERN without whitespace");
+            scope.properties.push_back({line.words[1], line.source});
+        }
+        else line.fail("unknown key; expected mode, level, smart, veval, depth, undriven, properties");
     } else {
         read_design(line, scope);
     }
