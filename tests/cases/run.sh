@@ -2,6 +2,11 @@
 set -euo pipefail
 ulimit -c 0
 root=$(cd -- "$(dirname -- "$0")/../.." && pwd -P)
+# level word runs EBMC with yices (spec 19); the tests need it.
+if ! command -v yices-smt2 >/dev/null; then
+    echo 'tests/cases/run.sh: yices-smt2 not found in PATH; install yices or add its directory to PATH' >&2
+    exit 1
+fi
 tmp_base=${TMPDIR:-$root/build}
 mkdir -p -- "$tmp_base"
 work=$(mktemp -d "$tmp_base/crisp-cases.XXXXXXXX")
@@ -264,4 +269,52 @@ timeout 11 "$root/build/crisp" merged.salt >out 2>err || status=$?
 [[ $status == 0 ]]
 has '  properties  top.p_two  top.p_one'
 has '2 tasks, 0 proved, 3 passed, 0 refuted, 0 unknown'
-echo 'EBMC cases passed (Specs 3, 8, 11, 18, and 20).'
+
+# Spec 19: level word uses EBMC's word-level SMT with yices.
+marker=$(mktemp "$work/marker.XXXXXXXX")
+mkdir -p empty-tmp
+for task in ram_word ram_auto; do
+    TMPDIR="$work/empty-tmp" run 1 level-word "$task"
+    has 'ram_word.p_written  passed'
+    has 'ram_word.p_untouched  refuted'
+    valid_vcd "crisp-out/level-word_$task/ram_word.p_untouched.vcd"
+    # The memory element 5 is written in cycle 5 and read as nonzero in cycle 6.
+    [[ $(grep '^#' "crisp-out/level-word_$task/ram_word.p_untouched.vcd" | tail -n 1) == '#6' ]]
+done
+cmp crisp-out/level-word_ram_word/ram_word.p_untouched.vcd crisp-out/level-word_ram_auto/ram_word.p_untouched.vcd
+# The SMT formulas go to the task's scratch directory, not to TMPDIR or /tmp.
+[[ -z $(ls -A empty-tmp) ]]
+if [[ -n $(find /tmp -maxdepth 1 -newer "$marker" -name 'smt2_dec_*' 2>/dev/null) ]]; then
+    echo 'level word left SMT files in /tmp' >&2
+    exit 1
+fi
+run 1 level-word counter_bmc
+has 'level word'
+has 'counter.p_range  refuted'
+has 'counter.p_stop  passed'
+[[ $(grep '^#' crisp-out/level-word_counter_bmc/counter.p_range.vcd | tail -n 1) == '#10' ]]
+run 1 level-word counter_kind
+has 'counter.p_range  refuted'
+has 'counter.p_stop  proved'
+
+# A timeout ends yices with the task.
+run 3 level-word factor
+has 'factor.p_no_factors  unknown'
+has 'timeout after 2 s'
+# oss-cad-suite starts yices through its loader, so match the command line.
+for pid in $(pgrep -f yices-smt2 || true); do
+    if [[ $(readlink "/proc/$pid/cwd" 2>/dev/null) == "$work"* ]]; then
+        echo "yices-smt2 $pid left after the timeout" >&2
+        exit 1
+    fi
+done
+
+# Without yices-smt2 on PATH, the task is not solved.
+mkdir -p no-yices
+status=0
+timeout 11 env PATH="$work/no-yices" "$root/build/crisp" "$root/tests/cases/level-word.salt" ram_word >out 2>err || status=$?
+[[ $status == 2 ]]
+has "crisp: $root/tests/cases/level-word.salt:26: [options] level word: yices-smt2 not found in PATH; install yices or add its directory to PATH" err
+[[ $(wc -l < err) == 1 ]]
+has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
+echo 'EBMC cases passed (Specs 3, 8, 11, 18, 19, and 20).'

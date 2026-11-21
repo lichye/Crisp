@@ -54,6 +54,8 @@ cmdlinet command_line(const front::Task& task) {
         args.insert(args.end(), {"--bound", std::to_string(task.depth->value)});
         if (task.mode.value == Mode::kind) args.push_back("--k-induction");
         if (task.level.value == front::Level::bit) args.push_back("--aig");
+        // Word-level SMT, which keeps arrays such as memories unflattened.
+        if (task.level.value == front::Level::word) args.push_back("--yices");
         break;
     }
     for (const auto& file : task.files) args.push_back(file.value.string());
@@ -61,7 +63,7 @@ cmdlinet command_line(const front::Task& task) {
     for (const auto& arg : args) argv.push_back(arg.c_str());
     cmdlinet cmd;
     if (cmd.parse(argv.size(), argv.data(),
-                  "I:D:(systemverilog)(top):(bdd)(new-ic3)(bound):(k-induction)(aig)(undriven):") ||
+                  "I:D:(systemverilog)(top):(bdd)(new-ic3)(bound):(k-induction)(aig)(yices)(undriven):") ||
         config.set(cmd))
         throw std::runtime_error("EBMC rejected the task options");
     // In this fork --aig takes precedence over --k-induction and dispatches

@@ -102,9 +102,11 @@ void merge(Task& task, const Task& common) {
 
 void check_options(Task& task) {
     const auto mode = task.mode.value;
-    if ((mode == Mode::bdd || mode == Mode::pdr) && task.level.value == Level::word)
+    // level word uses EBMC's word-level SMT, which only BMC and k-induction
+    // have; mode auto currently runs BDDs.
+    if ((mode == Mode::automatic || mode == Mode::bdd || mode == Mode::pdr) && task.level.value == Level::word)
         conflict(task.mode.source, task.level.source, "mode " + std::string(spelling(mode)) +
-                 " conflicts with level word; expected level auto or bit");
+                 " conflicts with level word; expected level auto or bit, or mode bmc or kind");
     if (task.smart.value == ToolUse::only && task.veval.value == ToolUse::only)
         conflict(task.smart.source, task.veval.source, "smart only and veval only conflict; expected at most one tool set to only");
     if (task.smart.value == ToolUse::only || task.veval.value == ToolUse::only) {

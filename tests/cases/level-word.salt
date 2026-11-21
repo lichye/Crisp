@@ -1,0 +1,33 @@
+[tasks]
+ram_word
+ram_auto
+counter_bmc
+counter_kind
+factor
+
+[files]
+ram_word: ram-word.sv
+ram_auto: ram-word.sv
+counter_bmc: counter.sv
+counter_kind: counter.sv
+factor: factor.sv
+
+[design]
+ram_word: top ram_word
+ram_auto: top ram_word
+counter_bmc: top counter
+counter_bmc: define STOP 10
+counter_kind: top counter
+counter_kind: define STOP 10
+factor: top factor
+
+[options]
+mode bmc
+level word
+depth 10
+ram_auto: level auto
+counter_kind: mode kind
+factor: depth 1
+
+[resource]
+factor: timeout 2
