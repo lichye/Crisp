@@ -18,8 +18,11 @@
 #include <util/simplify_expr.h>
 #include <util/std_expr.h>
 #include <util/symbol.h>
+#include <util/symbol_table_base.h>
 #include <util/json_irep.h>
 #include <verilog/verilog_expr.h>
+#include <verilog/verilog_typecheck_base.h>
+#include <verilog/verilog_types.h>
 #include <util/mathematical_types.h>
 
 #include <algorithm>
@@ -128,11 +131,15 @@ struct Port {
     bool isOutput;
     std::size_t width;
     bool isSigned = false;
+    const InstanceEdge::ProductPortType* type = nullptr;
 };
 
 std::string portDeclaration(const Port& port) {
     std::ostringstream out;
-    out << (port.isOutput ? "output" : "input") << " logic";
+    out << (port.isOutput ? "output " : "input ");
+    if (port.type)
+        return out.str() + port.type->prefix + " " + identifier(port.name) + port.type->suffix;
+    out << "logic";
     if (port.isSigned) out << " signed";
     if (port.width > 1) out << " [" << port.width - 1 << ":0]";
     out << " " << port.name;
@@ -561,29 +568,6 @@ exprt productExpression(exprt carried, exprt original) {
     return carried;
 }
 
-// Wrapper ports are flat vectors, so aggregate element reads cannot be printed on them.
-// Internal objects retain their original types under u_dut.
-bool readsAggregatePort(const PropertyLanding& transport) {
-    const auto prefix = transport.edge->instance + ".";
-    const auto isPort = [&](const irep_idt& id) {
-        const auto name = display(id);
-        return name.compare(0, prefix.size(), prefix) == 0 &&
-               transport.edge->ports.count(name.substr(prefix.size())) != 0;
-    };
-    bool found = false;
-    std::function<void(const exprt&)> walk = [&](const exprt& e) {
-        const auto& type = e.type();
-        const bool packed = (type.id() == ID_array &&
-                             type.get(ID_C_verilog_type) == ID_verilog_packed_array) ||
-                            type.id() == ID_struct || type.id() == ID_union;
-        if (e.id() == ID_symbol && isPort(to_symbol_expr(e).get_identifier()) && packed)
-            found = true;
-        for (const auto& op : e.operands()) walk(op);
-    };
-    walk(transport.monitor.sourceProperty);
-    return found;
-}
-
 // The printable source may still contain atoms unused by the monitor and never bound.
 bool namesOutsideInstance(const PropertyLanding& transport) {
     const auto prefix = transport.edge->instance + ".";
@@ -614,7 +598,7 @@ bool referencesChildInstance(const std::vector<const PropertyLanding*>& carried,
 
 // Admit only exact landings with a printable expression in the target scope.
 bool tier1(const PropertyLanding& transport) {
-    return admitLanding(transport, LandingUse::Exact) && !readsAggregatePort(transport) &&
+    return admitLanding(transport, LandingUse::Exact) && transport.edge->productPortError.empty() &&
            transport.rebasePrintable &&
            transport.monitor.sourceProperty.is_not_nil() &&
            !namesOutsideInstance(transport) &&
@@ -824,8 +808,10 @@ std::vector<Port> declaredPorts(const InstanceEdge& edge,
         const auto& type = symbol->type;
         std::size_t width = totalBits(type);
         if (width == 0) width = 1;
-        declared.push_back({bareName(binding.port), symbol->is_output, width,
-                            type.id() == ID_signedbv});
+        const auto name = bareName(binding.port);
+        const auto typed = edge.productPortTypes.find(name);
+        declared.push_back({name, symbol->is_output, width, type.id() == ID_signedbv,
+                            typed == edge.productPortTypes.end() ? nullptr : &typed->second});
     }
     return declared;
 }
@@ -1012,18 +998,15 @@ void writePartialNote(std::ostream& out, const ModuleSpecOptions& options,
                "instance (an atom the monitor did not need was never bound).\n";
     }
 
-    if (readsAggregatePort(row)) {
-        out << "Stopped by: it reads a port of array or struct type. The product\n"
-               "declares every port as a flat vector, where an element read\n"
-               "would select bits instead of elements.\n";
-    }
+    if (!row.edge->productPortError.empty())
+        out << "Stopped by: " << row.edge->productPortError << ".\n";
 
     // Only a constructed monitor can be missing its printable source form.
     if (row.monitor.sourceProperty.is_nil() && row.certified)
         out << "Stopped by: the frontend kept no printable form of this "
                "property.\n";
     else if (row.result == LoweringCoverage::Full && row.roundTrips &&
-             row.rebasePrintable && !readsAggregatePort(row) &&
+             row.rebasePrintable && row.edge->productPortError.empty() &&
              !namesOutsideInstance(row))
         out << "Stopped by: the carried form has no SystemVerilog spelling --\n"
                "the property is normalised to a temporal shape this printer\n"
@@ -1155,6 +1138,137 @@ SampledClock sampledClock(const InstanceEdge& edge, const std::vector<const Prop
 std::string proofKey(const std::string& instance,
                      const std::string& property) {
     return instance + '\t' + property;
+}
+
+void prepareLocalPortTypes(std::vector<InstanceEdge>& edges, const namespacet& ns) {
+    using PortType = InstanceEdge::ProductPortType;
+    using TypeSymbols = std::map<typet, std::vector<const symbolt*>>;
+
+    const auto needsType = [](const typet& type) {
+        return type.id() == ID_array || type.id() == ID_struct || type.id() == ID_union ||
+               type.get(ID_C_verilog_type) == ID_verilog_enum;
+    };
+    TypeSymbols aggregateTypedefs;
+    std::map<irep_idt, std::vector<const symbolt*>> enumTypedefs;
+    for (const auto& [id, symbol] : ns.get_symbol_table().symbols) {
+        if (!symbol.is_type) continue;
+        if (symbol.type.get(ID_C_verilog_type) == ID_verilog_enum)
+            enumTypedefs[symbol.type.get(ID_C_identifier)].push_back(&symbol);
+        else if (symbol.type.id() == ID_struct || symbol.type.id() == ID_union)
+            aggregateTypedefs[make_two_valued(symbol.type)].push_back(&symbol);
+    }
+
+    const auto dimension = [](const mp_integer& low, const mp_integer& size, bool increasing) {
+        const auto high = low + size - 1;
+        return "[" + integer2string(increasing ? low : high) + ":" +
+               integer2string(increasing ? high : low) + "]";
+    };
+
+    const auto sameDeclaration = [](const typet& port, const typet& alias) {
+        const auto& actual = to_struct_union_type(port).components();
+        const auto& declared = to_struct_union_type(alias).components();
+        // Elaboration replaces the outer location with the port use site.
+        // The fields retain their locations in the definition, distinguishing
+        // otherwise identical unpacked structs declared in different scopes.
+        return !actual.empty() && std::equal(
+            actual.begin(), actual.end(), declared.begin(), declared.end(),
+            [](const auto& a, const auto& b) {
+                return !a.source_location().is_nil() &&
+                       a.source_location().get_file() == b.source_location().get_file() &&
+                       a.source_location().get_line() == b.source_location().get_line();
+            });
+    };
+
+    const auto spelling = [&](const typet& original) -> std::optional<PortType> {
+        const typet* type = &original;
+        std::string packed, unpacked;
+        while (type->id() == ID_array) {
+            const auto& array = to_verilog_array_type(*type);
+            if (array.is_unpacked())
+                unpacked += dimension(array.offset(), array.size_int(), array.increasing());
+            else
+                packed += " " + dimension(array.offset(), array.size_int(), array.increasing());
+            type = &array.element_type();
+        }
+
+        PortType result;
+        result.suffix = std::move(unpacked);
+        if (needsType(*type)) {
+            // Struct and enum ports need the original typedef. A fresh declaration
+            // may be a different SystemVerilog type even with the same layout.
+            const std::vector<const symbolt*>* candidates = nullptr;
+            if (type->get(ID_C_verilog_type) == ID_verilog_enum) {
+                const auto found = enumTypedefs.find(type->get(ID_C_identifier));
+                if (found != enumTypedefs.end()) candidates = &found->second;
+            } else {
+                const auto found = aggregateTypedefs.find(make_two_valued(*type));
+                if (found != aggregateTypedefs.end()) candidates = &found->second;
+            }
+            if (!candidates) return {};
+            std::map<std::string, const symbolt*> accessible;
+            for (const auto* symbol : *candidates) {
+                const auto full = display(symbol->name);
+                const auto separator = full.find("::");
+                if (separator == std::string::npos || full.find('.') != std::string::npos ||
+                    full.find("::", separator + 2) != std::string::npos)
+                    continue;
+                if (type->get(ID_C_verilog_type) != ID_verilog_enum &&
+                    !sameDeclaration(*type, symbol->type))
+                    continue;
+                accessible.emplace(full, symbol);
+            }
+            if (accessible.empty()) return {};
+            const auto& [full, symbol] = *accessible.begin();
+            result.scope = full.substr(0, full.find("::"));
+            result.name = id2string(symbol->base_name);
+            const symbolt* declared = symbol;
+            if (result.scope != "$unit") {
+                const symbolt* package = nullptr;
+                if (ns.lookup(verilog_package_identifier(result.scope), package))
+                    return {};
+                declared = package;
+            }
+            if (declared->location.get_file().empty()) return {};
+            result.declarationFile = id2string(declared->location.get_file());
+            result.prefix = full + packed;
+            return result;
+        }
+
+        if (type->id() != ID_bool && type->id() != ID_unsignedbv &&
+            type->id() != ID_signedbv && type->id() != ID_verilog_unsignedbv &&
+            type->id() != ID_verilog_signedbv)
+            return {};
+        result.prefix = is_four_state_vector(*type) ? "logic" : "bit";
+        if (type->id() == ID_signedbv || type->id() == ID_verilog_signedbv)
+            result.prefix += " signed";
+        result.prefix += packed;
+        if (type->id() != ID_bool) {
+            const auto& vector = to_verilog_vector_type(*type);
+            if (vector.get_width() > 1 || !vector.get(ID_C_offset).empty())
+                result.prefix += " " + dimension(vector.offset(), vector.get_width(), vector.increasing());
+        }
+        return result;
+    };
+
+    for (auto& edge : edges) {
+        const auto prefix = edge.instance + ".";
+        for (const auto& binding : edge.bindings) {
+            const auto& port = binding.port;
+            if (!needsType(port.type())) continue;
+            const auto shown = display(port.get_identifier());
+            if (shown.compare(0, prefix.size(), prefix) != 0) continue;
+            const auto name = shown.substr(prefix.size());
+            if (!edge.ports.count(name) || edge.productPortTypes.count(name)) continue;
+            auto type = spelling(port.type());
+            if (!type) {
+                edge.productPortError = "port " + name +
+                    " has no unambiguous package or $unit type declaration "
+                    "that the local wrapper can use";
+                break;
+            }
+            edge.productPortTypes.emplace(name, std::move(*type));
+        }
+    }
 }
 
 bool isTier1(const PropertyLanding& transport) { return tier1(transport); }
@@ -1339,7 +1453,7 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
             stats.notes++;
         }
 
-        if (carried.empty() && contracts.empty()) continue;
+        if (!edge.productPortError.empty() || (carried.empty() && contracts.empty())) continue;
 
         const auto ports = declaredPorts(edge, ns);
         // Constant-only products need no design clock; use a wrapper clock when absent.
@@ -1472,9 +1586,14 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
         for (const auto& port : ports) {
             const auto tie = tied.find(port.name);
             if (tie == tied.end()) continue;
-            out << "  wire" << (port.isSigned ? " signed" : "");
-            if (port.width > 1) out << " [" << port.width - 1 << ":0]";
-            out << " " << port.name << " = " << tie->second << ";\n";
+            if (port.type) {
+                out << "  wire " << port.type->prefix << " " << identifier(port.name) << port.type->suffix;
+            } else {
+                out << "  wire" << (port.isSigned ? " signed" : "");
+                if (port.width > 1) out << " [" << port.width - 1 << ":0]";
+                out << " " << port.name;
+            }
+            out << " = " << tie->second << ";\n";
         }
         if (!tied.empty()) out << "\n";
         // Retain instance parameter values rather than elaborating module defaults.
@@ -1711,9 +1830,14 @@ ModuleSpecStats writeModuleSpecs(const std::vector<PropertyLanding>& transports,
 
         // Scan only the body; header diagnostics can contain unrelated scope-qualified names.
         const auto text = out.str();
+        for (const auto& [port, type] : edge.productPortTypes) {
+            if (type.name.empty()) continue;
+            const auto key = type.scope == "$unit"
+                ? "name:" + type.name : "package:" + type.scope;
+            declarationCache[key] = type.declarationFile;
+        }
         const auto block = prerequisiteBlock(
-            prerequisites(text.substr(headerEnd), options, declarationCache),
-            wrapper);
+            prerequisites(text.substr(headerEnd), options, declarationCache), wrapper);
         util::writeAtomic(path.string(), [&](std::ostream& file) {
             file << text.substr(0, headerEnd) << block << text.substr(headerEnd);
         }, util::AtomicOutputSync::Deferred);
