@@ -2,6 +2,12 @@
 set -euo pipefail
 ulimit -c 0
 root=$(cd -- "$(dirname -- "$0")/../.." && pwd -P)
+# The CLI checks run tasks in the default rtl-mode strict, which needs slang (spec 23).
+slang=${CRISP_SLANG:-$root/src/components/slang/build/bin/slang}
+if [[ ! -x $slang ]]; then
+    echo "tests/front/run.sh: slang not found at $slang; run 'make slang' or set CRISP_SLANG" >&2
+    exit 1
+fi
 tmp_base=${TMPDIR:-$root/build}
 mkdir -p -- "$tmp_base"
 scratch=$(mktemp -d "$tmp_base/crisp-front.XXXXXXXX")

@@ -1,2 +1,6 @@
 [files]
 syntax.sv
+
+[options]
+# The subject is EBMC's own syntax error, so slang's check is skipped (spec 23).
+rtl-mode relaxed

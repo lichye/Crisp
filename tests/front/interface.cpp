@@ -136,6 +136,18 @@ void positive_cases(const fs::path& dir, std::uint64_t cpus) {
     check_undriven("task1: undriven error\nundriven const\n", 5, 6);
     check_undriven("task1:\nundriven error\n--\nundriven const\n", 6, 8);
 
+    // rtl-mode (spec 23): strict unless written; a task's own setting wins.
+    write(input, tasks + files);
+    pair = ready(input);
+    require(pair.size() == 2 && pair[0].rtl_mode.value == RtlMode::strict && !pair[0].rtl_mode.source,
+            "rtl-mode defaults to strict");
+    write(input, tasks + "[options]\nrtl-mode relaxed\ntask1: rtl-mode strict\n" + files);
+    pair = ready(input);
+    require(pair.size() == 2 && pair[0].rtl_mode.value == RtlMode::strict &&
+            pair[1].rtl_mode.value == RtlMode::relaxed, "task overrides the common rtl-mode");
+    origin(pair[0].rtl_mode, salt, 6);
+    origin(pair[1].rtl_mode, salt, 5);
+
     // properties PATTERN: the entries for all tasks and for one task merge in file order (5.1.3).
     const auto check_properties = [&](const std::string& settings, const std::vector<std::string>& first,
                                       const std::vector<std::size_t>& first_lines, std::size_t common_line) {
@@ -210,7 +222,10 @@ const InvalidCase invalid[] = {
     {"27-level-word-default-mode", "[files]\nrtl/fifo.sv\n[options]\nlevel word\n", 4,
      "mode auto conflicts with level word"},
     {"28-level-word-mode-auto", "[files]\nrtl/fifo.sv\n[options]\nlevel word\nmode auto\n", 5,
-     "mode auto conflicts with level word"}
+     "mode auto conflicts with level word"},
+    {"29-rtl-mode-value", "[options]\nrtl-mode loose\n", 2, "strict, relaxed"},
+    {"30-rtl-mode-missing", "[options]\nrtl-mode\n", 2, "rtl-mode"},
+    {"31-rtl-mode-duplicate", "[options]\nrtl-mode strict\nrtl-mode relaxed\n", 3, "duplicate setting"}
 };
 
 } // namespace
