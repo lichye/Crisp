@@ -110,10 +110,10 @@ void check_options(Task& task) {
                  " conflicts with level word; expected level auto or bit, or mode bmc or kind");
     if (task.smart.value == ToolUse::only && task.veval.value == ToolUse::only)
         conflict(task.smart.source, task.veval.source, "smart only and veval only conflict; expected at most one tool set to only");
-    if (task.smart.value == ToolUse::only || task.veval.value == ToolUse::only) {
-        const bool smart_only = task.smart.value == ToolUse::only;
-        const auto& only = smart_only ? task.smart.source : task.veval.source;
-        const std::string prefix = smart_only ? "smart only" : "veval only";
+    // veval only checks each landing with mode, level, depth and properties (spec 25).
+    if (task.smart.value == ToolUse::only) {
+        const auto& only = task.smart.source;
+        const std::string prefix = "smart only";
         if (task.mode.source) conflict(only, task.mode.source, prefix + " requires mode to be omitted");
         if (task.level.source) conflict(only, task.level.source, prefix + " requires level to be omitted");
         if (task.depth) conflict(only, task.depth->source, prefix + " requires depth to be omitted");

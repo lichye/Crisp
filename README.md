@@ -54,6 +54,8 @@ For the component workflows on Ubuntu 24.04 x86-64, install the host development
 
 Run `make slang` before `make test`: by default (`rtl-mode strict`) each `.salt` task first checks the RTL with slang, built from the pinned `src/components/slang` submodule; set `CRISP_SLANG` to use another slang, or write `rtl-mode relaxed` under `[options]` to skip the check.
 
+Writing `veval on` or `veval only` under `[options]` lowers the assertions with veval and checks each landing instance with Crisp's EBMC; `veval on` then checks what veval did not prove on the whole design. Without a `veval` line a task runs as before.
+
 Tasks with `level word` run EBMC's word-level SMT and need Yices's `yices-smt2` on `PATH`, for example from the OSS CAD Suite. `make test` requires it.
 
 ```sh

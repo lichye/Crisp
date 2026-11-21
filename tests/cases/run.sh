@@ -402,4 +402,56 @@ has "crisp: $rtl:9: rtl-mode strict: slang not found at $work/no-slang. Run 'mak
 [[ $(wc -l < err) == 1 ]]
 has 'use_before_declaration.p_follows  passed'
 has '2 tasks, 0 proved, 1 passed, 0 refuted, 0 unknown'
-echo 'EBMC cases passed (Specs 3, 8, 11, 18, 19, 20, and 23).'
+# Spec 25: veval lowers the assertions; Crisp's EBMC checks each landing.
+run 0 veval assumed
+has 'assumed_top.u_child.p_child  proved'
+has 'proved in assumed_top.u_child (veval)'
+# Without the parent's assumption the same landing has a local counterexample.
+run 3 veval unassumed
+wave=crisp-out/veval_unassumed/veval/assumed_top.u_child.p_child/assumed_top.u_child.vcd
+has "assumed_top.u_child.p_child  unknown"
+has "local counterexample in assumed_top.u_child $wave"
+valid_vcd "$wave"
+run 0 veval assumed_bmc
+has 'assumed_top.u_child.p_child  passed'
+has 'passed in assumed_top.u_child (veval), bmc depth 5'
+# A local counterexample the parent never allows: unknown with veval only,
+# proved by the whole design with veval on.
+run 3 veval spurious_only
+has 'even_top.u_child.p_even  unknown'
+valid_vcd crisp-out/veval_spurious_only/veval/even_top.u_child.p_even/even_top.u_child.vcd
+run 0 veval spurious_on
+has 'even_top.u_child.p_even  proved'
+if grep -Fq '(veval)' out; then
+    cat out err >&2
+    echo 'veval on: the whole design should decide p_even' >&2
+    exit 1
+fi
+run 1 veval bug_on
+has 'bug_top.u_child.p_small  refuted  '
+has 'crisp-out/veval_bug_on/bug_top.u_child.p_small.vcd'
+valid_vcd crisp-out/veval_bug_on/bug_top.u_child.p_small.vcd
+# The leaf has a counterexample; one level up the property holds.
+run 0 veval up
+has 'proved in up_top.u_mid (veval)'
+run 3 veval missing
+has 'checked without assumption missing_top.sum_small (arrives partial)'
+run 0 veval selected
+has 'two_top.u_child.p_one  proved'
+[[ $(grep -c '^  two_top\.' out) == 1 ]]
+run 2 veval clocks
+has 'crisp: veval could not lower the design' err
+has 'more than one clock (two_clocks.clk_a, two_clocks.clk_b)' err
+run 2 veval unreadable
+has 'crisp: veval could not lower the design' err
+has 'veval-unreadable.sv line 3' err
+# A struct port read field by field: the product keeps the port's type.
+run 0 veval struct
+has 'proved in struct_top.u_child (veval)'
+# Without a veval line the task runs as before.
+run 0 token prove
+if grep -Fq 'not connected' out; then
+    cat out >&2
+    exit 1
+fi
+echo 'EBMC cases passed (Specs 3, 8, 11, 18, 19, 20, 23, and 25).'

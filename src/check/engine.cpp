@@ -24,6 +24,44 @@
 #include <vector>
 
 namespace crisp::check {
+
+// The wildcards of properties PATTERN (spec 20): '*' matches any characters
+// except '.', '**' any characters, '?' one character except '.'. All other
+// characters, including '[' and ']', match literally.
+bool pattern_matches(std::string_view pattern, std::string_view name) {
+    enum class Kind { literal, one, star, stars };
+    std::vector<std::pair<Kind, char>> tokens;
+    for (std::size_t i = 0; i < pattern.size();) {
+        if (pattern[i] == '*') {
+            const auto run = pattern.find_first_not_of('*', i);
+            const auto end = run == pattern.npos ? pattern.size() : run;
+            tokens.emplace_back(end - i == 1 ? Kind::star : Kind::stars, '*');
+            i = end;
+        } else {
+            tokens.emplace_back(pattern[i] == '?' ? Kind::one : Kind::literal, pattern[i]);
+            ++i;
+        }
+    }
+    // rest[j]: the tokens after the current one match name[j..].
+    const auto size = name.size();
+    std::vector<char> rest(size + 1, 0), here(size + 1);
+    rest[size] = 1;
+    for (auto token = tokens.rbegin(); token != tokens.rend(); ++token) {
+        const auto [kind, c] = *token;
+        for (std::size_t j = size + 1; j-- > 0;) {
+            const bool more = j < size;
+            switch (kind) {
+            case Kind::literal: here[j] = more && name[j] == c && rest[j + 1]; break;
+            case Kind::one: here[j] = more && name[j] != '.' && rest[j + 1]; break;
+            case Kind::star: here[j] = rest[j] || (more && name[j] != '.' && here[j + 1]); break;
+            case Kind::stars: here[j] = rest[j] || (more && here[j + 1]); break;
+            }
+        }
+        std::swap(rest, here);
+    }
+    return rest[0];
+}
+
 namespace {
 namespace fs = std::filesystem;
 using front::Mode;
@@ -71,43 +109,6 @@ cmdlinet command_line(const front::Task& task) {
     if (cmd.isset("aig") && cmd.isset("k-induction"))
         throw std::runtime_error("EBMC does not support level bit for mode kind");
     return cmd;
-}
-
-// The wildcards of properties PATTERN (spec 20): '*' matches any characters
-// except '.', '**' any characters, '?' one character except '.'. All other
-// characters, including '[' and ']', match literally.
-bool pattern_matches(std::string_view pattern, std::string_view name) {
-    enum class Kind { literal, one, star, stars };
-    std::vector<std::pair<Kind, char>> tokens;
-    for (std::size_t i = 0; i < pattern.size();) {
-        if (pattern[i] == '*') {
-            const auto run = pattern.find_first_not_of('*', i);
-            const auto end = run == pattern.npos ? pattern.size() : run;
-            tokens.emplace_back(end - i == 1 ? Kind::star : Kind::stars, '*');
-            i = end;
-        } else {
-            tokens.emplace_back(pattern[i] == '?' ? Kind::one : Kind::literal, pattern[i]);
-            ++i;
-        }
-    }
-    // rest[j]: the tokens after the current one match name[j..].
-    const auto size = name.size();
-    std::vector<char> rest(size + 1, 0), here(size + 1);
-    rest[size] = 1;
-    for (auto token = tokens.rbegin(); token != tokens.rend(); ++token) {
-        const auto [kind, c] = *token;
-        for (std::size_t j = size + 1; j-- > 0;) {
-            const bool more = j < size;
-            switch (kind) {
-            case Kind::literal: here[j] = more && name[j] == c && rest[j + 1]; break;
-            case Kind::one: here[j] = more && name[j] != '.' && rest[j + 1]; break;
-            case Kind::star: here[j] = rest[j] || (more && name[j] != '.' && here[j + 1]); break;
-            case Kind::stars: here[j] = rest[j] || (more && here[j + 1]); break;
-            }
-        }
-        std::swap(rest, here);
-    }
-    return rest[0];
 }
 
 // Disable the assertions that no PATTERN selects, as EBMC's --property does.
@@ -236,7 +237,8 @@ void write_wave(const trans_tracet& trace, const fs::path& file, messaget& messa
     wave.close();
 }
 
-void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, EngineRun operation) {
+void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, EngineRun operation,
+           const std::set<std::string>& skip) {
     auto cmd = command_line(task);
     register_language(new_verilog_language);
     format_hooks();
@@ -255,6 +257,8 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
     auto properties = ebmc_propertiest::from_command_line(cmd, *system, messages);
     properties.properties.remove_if([](const auto& p) { return p.is_exists_path(); });
     if (!task.properties.empty()) select_properties(task, properties);
+    for (auto& p : properties.properties)
+        if (!p.is_assumption() && skip.count(id2string(p.name))) p.disable();
 
     std::map<irep_idt, std::size_t> ids;
     for (const auto& p : properties.properties) {
@@ -321,9 +325,10 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
 } // namespace
 
 bool run_engine(const front::Task& task, const std::filesystem::path& scratch, Reporter reporter,
-                EngineRun operation) {
+                EngineRun operation, const std::set<std::string>& skip) {
     try {
-        solve(task, scratch, reporter, operation);
+        if (operation == EngineRun::lower) lower_for_veval(task, scratch, reporter);
+        else solve(task, scratch, reporter, operation, skip);
         return true;
     } catch (const UndrivenError&) {
         return false;

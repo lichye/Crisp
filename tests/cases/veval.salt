@@ -1,0 +1,52 @@
+[tasks]
+assumed
+unassumed
+assumed_bmc
+spurious_only
+spurious_on
+bug_on
+up
+missing
+selected
+clocks
+unreadable
+struct
+
+[files]
+assumed: veval-assumed.sv
+unassumed: veval-assumed.sv
+assumed_bmc: veval-assumed.sv
+spurious_only: veval-spurious.sv
+spurious_on: veval-spurious.sv
+bug_on: veval-bug.sv
+up: veval-up.sv
+missing: veval-missing.sv
+selected: veval-two.sv
+clocks: veval-clocks.sv
+unreadable: veval-unreadable.sv
+struct: veval-struct.sv
+
+[design]
+assumed: top assumed_top
+unassumed: top assumed_top
+unassumed: define NO_ASSUME
+assumed_bmc: top assumed_top
+spurious_only: top even_top
+spurious_on: top even_top
+bug_on: top bug_top
+up: top up_top
+missing: top missing_top
+selected: top two_top
+clocks: top two_clocks
+unreadable: top unreadable
+struct: top struct_top
+
+[options]
+veval only
+mode kind
+depth 5
+assumed_bmc: mode bmc
+spurious_on: veval on
+bug_on: veval on
+selected: properties two_top.u_child.p_one
+unreadable: rtl-mode relaxed
