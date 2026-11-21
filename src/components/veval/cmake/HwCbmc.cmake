@@ -57,7 +57,8 @@ set(frontend_sources
     verilog/verilog_typecheck_expr.cpp
     verilog/verilog_typecheck_sva.cpp
     verilog/verilog_types.cpp
-    verilog/vtype.cpp)
+    verilog/vtype.cpp
+    verilog/vv_object.cpp)
 list(TRANSFORM frontend_sources PREPEND "${hwcbmc_src}/")
 set(cbmc_sources
     big-int/bigint-func.cc
