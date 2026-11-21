@@ -143,6 +143,8 @@ struct ModuleSpecOptions {
     // Input order and include paths used to resolve package/$unit prerequisites.
     std::vector<std::string> inputFiles;
     std::vector<std::string> includePaths;
+    // Sync individual products when the caller owns a private scratch directory.
+    bool syncPerFile = false;
 };
 
 // Publish products atomically, remove stale generated files, and return counts.
