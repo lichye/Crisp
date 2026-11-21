@@ -29,6 +29,7 @@ struct CheckOptions : helper::EbmcOptions {
     // a hierarchical design the invariant belongs to the module its variables
     // live in. Empty means topModule.
     std::string injectModule;
+    std::string clock;
     int jobs = 1;
     std::string scratchDir;   // where the per-assertion copies are written
 };
@@ -63,7 +64,7 @@ std::string fileDeclaringModule(const std::vector<std::string>& files,
 
 std::string injectAssertions(const std::string& source, const std::string& top,
                              const std::vector<std::string>& assertions,
-                             const std::string& label = {});
+                             const std::string& clock, const std::string& label = {});
 
 std::vector<CheckResult> checkAssertions(const std::string& designFile,
                                          const std::vector<std::string>& assertions,
@@ -75,7 +76,8 @@ void writeAssertionFile(const std::string& designFile, const std::string& output
                         const std::string& top,
                         const std::vector<std::string>& assertions,
                         const std::string& configJson,
-                        VerificationMode verification, int bound);
+                        VerificationMode verification, int bound,
+                        const std::string& clock);
 
 }  // namespace emit
 }  // namespace smart

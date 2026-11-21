@@ -35,14 +35,12 @@ VerilogChecker::VerilogChecker() {
     verilogSrcPath = "";
     formalFilePath = "";
     tracePath = "";
-    moduleTime = "";
     bound = 3;
 }
 
 VerilogChecker::VerilogChecker(std::string verilogSrcPath, BackEndSolver solver) {
     this->verilogSrcPath = verilogSrcPath;
     this->solver = solver;
-    moduleTime = "";
     bound = 3;
     unboundCheck = false;
 }
@@ -51,7 +49,6 @@ VerilogChecker::VerilogChecker(std::string verilogSrcPath,std::string homePath,B
     this->verilogSrcPath = verilogSrcPath;
     this->homePath = homePath;
     this->solver = solver;
-    moduleTime = "";
     bound = 3;
     unboundCheck = false;
     std::string relatePath = homePath+"/runtime/verilog";
@@ -112,7 +109,7 @@ void VerilogChecker::writeVerilogFile()
     std::ofstream output(formalFilePath);
     output.exceptions(std::ios::failbit | std::ios::badbit);
     output << smart::emit::injectAssertions(source, injectModule.empty() ? topModule : injectModule,
-                                           properties, propertyLabel);
+                                           properties, clock, propertyLabel);
     output.close();
 }
 
@@ -125,7 +122,7 @@ void VerilogChecker::addProperty(State* state,PropertyType type) {
     if(type == PropertyType::REACHABILITY_PROPERTY) {
         assert(!state->isUndefined());//only defined states can be verified
 
-        properties.push_back(moduleTime+" (!"+state->toVerilogExpr()+")");
+        properties.push_back("(!"+state->toVerilogExpr()+")");
     }
 }
 
@@ -133,10 +130,10 @@ void VerilogChecker::addProperty(SygusFunction* func,PropertyType type) {
     propertyTypes.push_back(type);
 
     if(type == PropertyType::REACHABILITY_PROPERTY){
-        properties.push_back(moduleTime+" "+func->getBodyVerilogExpr());
+        properties.push_back(func->getBodyVerilogExpr());
     }
     else if(type == PropertyType::SAFT_PROPERTY){
-        properties.push_back(moduleTime+func->getBodyVerilogExpr());
+        properties.push_back(func->getBodyVerilogExpr());
     }
     else{
         printError("Error: Property type not supported\n");
@@ -291,8 +288,8 @@ void VerilogChecker::setTopModule(std::string topModule) {
     this->topModule = topModule;
 }
 
-void VerilogChecker::setModuleTime(std::string moduleTime) {
-    this->moduleTime = moduleTime;
+void VerilogChecker::setClock(std::string clock) {
+    this->clock = std::move(clock);
 }
 
 bool VerilogChecker::runSby() {

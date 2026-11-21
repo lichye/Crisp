@@ -1,5 +1,6 @@
 #include "Ebmc.h"
 #include "Trace.h"
+#include "emit/AssertionWriter.h"
 
 #include <filesystem>
 #include <iostream>
@@ -18,6 +19,27 @@ int main(int argc, char** argv)
     options.bound = 5;
 
     try {
+        const std::string source = "module top(input clk, a, b, c); endmodule";
+        const auto emit = [&](const std::string& assertion, const std::string& clock) {
+            return smart::emit::injectAssertions(source, "top", {assertion}, clock, "candidate");
+        };
+        if (emit("((a && b) |-> c)", "").find(
+                "always_comb candidate: assert ((!((a && b)) || (c)));") == std::string::npos ||
+            emit("a[+1] |-> b", "").find("assert ((!(a[+1]) || (b)));") == std::string::npos ||
+            emit("a |=> $past(b)", "clk").find(
+                "candidate: assert property (@(posedge clk) a |=> $past(b));") == std::string::npos)
+            throw std::runtime_error("incorrect SMART assertion wrapper");
+        for (const std::string assertion :
+                 {"a ##1 b |-> c", "a |=> b", "a |-> $past(b)", "a && (b |-> c)", "a[ *2 ] |-> b"}) {
+            bool rejected = false;
+            try {
+                emit(assertion, "");
+            } catch (const std::runtime_error& e) {
+                rejected = std::string(e.what()).find(assertion) != std::string::npos;
+            }
+            if (!rejected)
+                throw std::runtime_error("missing assertion diagnostic for " + assertion);
+        }
         const auto narrow = checkProperty(design, options, "candidate", trace, "scope_probe.narrow.u");
         if (narrow.status != EbmcStatus::Refuted || !narrow.counterexample.empty() ||
             std::filesystem::exists(trace))

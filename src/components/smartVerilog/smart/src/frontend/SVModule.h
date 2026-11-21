@@ -67,6 +67,7 @@ std::string injectAssumes(const std::string& text, const std::string& top,
 // Clock/reset guessing. `configured` overrides when non-empty (clock) /
 // engaged (reset). Candidate lists and active-level inference mirror
 // gen_bench.CLOCK_NAMES / RESET_NAMES.
+std::optional<std::string> guessClock(const std::vector<std::string>& inputPorts);
 std::optional<std::string> guessClock(const ModuleInfo& info,
                                       const std::string& configured = "");
 std::optional<ResetInfo> guessReset(const ModuleInfo& info,
