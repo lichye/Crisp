@@ -52,6 +52,8 @@ make binary
 
 For the component workflows on Ubuntu 24.04 x86-64, install the host development packages and put Spot's `ltl2tgba` on `PATH`. [Spot installation](https://spot.lre.epita.fr/install.html)
 
+Tasks with `level word` run EBMC's word-level SMT and need Yices's `yices-smt2` on `PATH`, for example from the OSS CAD Suite. `make test` requires it.
+
 ```sh
 sudo apt-get install build-essential cmake flex bison git curl patch ca-certificates python3-pip libsqlite3-dev libssl-dev
 make deps && make build

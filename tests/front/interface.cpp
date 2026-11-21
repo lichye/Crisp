@@ -206,7 +206,11 @@ const InvalidCase invalid[] = {
     {"25-properties-smart-only", "[files]\nrtl/fifo.sv\n[options]\nproperties top.*\nsmart only\n", 5,
      "smart only requires properties to be omitted"},
     {"26-properties-veval-only", "[files]\nrtl/fifo.sv\n[options]\nveval only\nproperties top.*\n", 5,
-     "veval only requires properties to be omitted"}
+     "veval only requires properties to be omitted"},
+    {"27-level-word-default-mode", "[files]\nrtl/fifo.sv\n[options]\nlevel word\n", 4,
+     "mode auto conflicts with level word"},
+    {"28-level-word-mode-auto", "[files]\nrtl/fifo.sv\n[options]\nlevel word\nmode auto\n", 5,
+     "mode auto conflicts with level word"}
 };
 
 } // namespace

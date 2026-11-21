@@ -11,7 +11,10 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <string_view>
 #include <system_error>
+
+#include <unistd.h>
 
 namespace crisp::check {
 namespace {
@@ -76,6 +79,8 @@ void set_memory_limit(std::uint64_t mib) {
         if (::setpgid(0, 0) < 0) throw os_error("isolate task process");
 #endif
         fs::current_path(scratch); // Keep any scratch files created by IC3 private to this task.
+        // EBMC writes SMT formulas to TMPDIR; they go with the task's scratch directory.
+        if (::setenv("TMPDIR", scratch.c_str(), 1) < 0) throw os_error("set TMPDIR for EBMC");
         if (!std::freopen("diagnostics.log", "w", stderr) || ::dup2(STDERR_FILENO, STDOUT_FILENO) < 0)
             throw os_error("redirect EBMC diagnostics");
         const struct rlimit no_core{0, 0};
@@ -118,6 +123,20 @@ veval::util::GroupWait run_worker(const front::Task& task, const fs::path& scrat
     return wait;
 }
 
+// The directories of PATH, searched as by execvp.
+bool on_path(const std::string& program) {
+    const char* path = std::getenv("PATH");
+    std::string_view list = path ? path : "";
+    while (true) {
+        const auto end = list.find(':');
+        const auto dir = list.substr(0, end);
+        const auto file = (dir.empty() ? fs::path(".") : fs::path(dir)) / program;
+        if (::access(file.c_str(), X_OK) == 0 && fs::is_regular_file(file)) return true;
+        if (end == list.npos) return false;
+        list.remove_prefix(end + 1);
+    }
+}
+
 void check_options(const front::Task& task) {
     if (!task.params.empty()) {
         const auto& param = task.params.front();
@@ -125,6 +144,12 @@ void check_options(const front::Task& task) {
                                  ": param " + param.value.name + " is not supported");
     }
     if (task.clock) std::cout << "  clock " << task.clock->value << " is recorded only\n";
+    if (task.level.value == front::Level::word && !on_path("yices-smt2")) {
+        const auto& level = task.level.source.value();
+        throw std::runtime_error(level.file.string() + ":" + std::to_string(level.line) +
+                                 ": [options] level word: yices-smt2 not found in PATH; "
+                                 "install yices or add its directory to PATH");
+    }
     auto tool = [](const char* name, front::ToolUse setting) {
         if (setting == front::ToolUse::only)
             throw std::runtime_error(std::string(name) + " only is not supported");

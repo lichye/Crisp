@@ -2,6 +2,8 @@
 bmc
 kind
 pdr
+bmc_word
+kind_word
 
 [files]
 reset-low.sv
@@ -15,3 +17,9 @@ bmc: depth 3
 kind: mode kind
 kind: depth 3
 pdr: mode pdr
+bmc_word: mode bmc
+kind_word: mode kind
+bmc_word: level word
+kind_word: level word
+bmc_word: depth 3
+kind_word: depth 3
