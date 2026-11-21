@@ -41,16 +41,22 @@ module fifo(input wire clk, input wire rst_n);
 endmodule
 SV
 
+# Successful task runs now produce a progress TSV in their output directories.
+mkdir -p "$scratch/work/crisp-out"/{fifo,fifo-crlf}_{task1,task2}
 snapshot() {
-    (cd -- "$scratch" && find work cases -print0 | LC_ALL=C sort -z)
+    (cd -- "$scratch" && find work cases "$@" -print0 | LC_ALL=C sort -z)
 }
 
 cli() {
     local expected=$1 status=0
     shift
-    snapshot > "$capture/before"
+    local -a filter=()
+    if [[ $expected == 0 && ${1:-} == ../cases/*.salt ]]; then
+        filter=(! -path 'work/crisp-out/*/progress-??????.tsv')
+    fi
+    snapshot "${filter[@]}" > "$capture/before"
     "$root/build/crisp" "$@" </dev/null > "$capture/out" 2> "$capture/err" || status=$?
-    snapshot > "$capture/after"
+    snapshot "${filter[@]}" > "$capture/after"
     cmp "$capture/before" "$capture/after"
     if [[ $status != "$expected" ]]; then
         cat "$capture/out" "$capture/err" >&2
