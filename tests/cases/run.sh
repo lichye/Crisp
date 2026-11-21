@@ -291,12 +291,16 @@ has 'buechi.p_quiet  proved'
 has 'buechi.p_next  refuted'
 has 'buechi.p_later  refuted'
 has '1 task, 1 proved, 0 passed, 2 refuted, 0 unknown'
-for target in p_next p_later; do
-    valid_vcd "crisp-out/buechi_multi_pdr/buechi.$target.vcd"
+for case in 'p_next #1' 'p_later #2'; do
+    read -r target expected_time <<< "$case"
+    wave="crisp-out/buechi_multi_pdr/buechi.$target.vcd"
+    valid_vcd "$wave"
+    last_time=$(awk '/^#[0-9]+$/ {last=$0} END {print last}' "$wave")
+    if [[ $last_time != "$expected_time" ]]; then
+        printf '%s: expected final timestamp %s, got %s\n' "$wave" "$expected_time" "$last_time" >&2
+        exit 1
+    fi
 done
-grep -Fxq '#1' crisp-out/buechi_multi_pdr/buechi.p_next.vcd
-! grep -Fxq '#2' crisp-out/buechi_multi_pdr/buechi.p_next.vcd
-grep -Fxq '#2' crisp-out/buechi_multi_pdr/buechi.p_later.vcd
 run 2 buechi unsupported_contract
 has 'unsupported Buechi assumption buechi.live' err
 
