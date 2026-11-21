@@ -136,6 +136,10 @@ void positive_cases(const fs::path& dir, std::uint64_t cpus) {
     check_undriven("task1: undriven error\nundriven const\n", 5, 6);
     check_undriven("task1:\nundriven error\n--\nundriven const\n", 6, 8);
 
+    // veval only checks each landing with mode, level, depth and properties (spec 25).
+    write(input, files + "[options]\nveval only\nmode bmc\nlevel word\ndepth 5\nproperties top.*\n");
+    require(ready(input).at(0).veval.value == ToolUse::only, "veval only takes mode, level, depth and properties");
+
     // rtl-mode (spec 23): strict unless written; a task's own setting wins.
     write(input, tasks + files);
     pair = ready(input);
@@ -217,8 +221,6 @@ const InvalidCase invalid[] = {
      7, "duplicate pattern 'top.*'"},
     {"25-properties-smart-only", "[files]\nrtl/fifo.sv\n[options]\nproperties top.*\nsmart only\n", 5,
      "smart only requires properties to be omitted"},
-    {"26-properties-veval-only", "[files]\nrtl/fifo.sv\n[options]\nveval only\nproperties top.*\n", 5,
-     "veval only requires properties to be omitted"},
     {"27-level-word-default-mode", "[files]\nrtl/fifo.sv\n[options]\nlevel word\n", 4,
      "mode auto conflicts with level word"},
     {"28-level-word-mode-auto", "[files]\nrtl/fifo.sv\n[options]\nlevel word\nmode auto\n", 5,

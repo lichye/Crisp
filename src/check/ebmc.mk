@@ -7,6 +7,14 @@ $(CRISP_ADAPTER): $(CRISP_ROOT)/src/check/engine.cpp $(CRISP_ROOT)/src/check/ebm
 
 -include $(CRISP_ADAPTER:.o=.d)
 
+# veval's lowering steps (spec 25), with the engine's flags and veval's headers.
+CRISP_LOWER := $(CRISP_ROOT)/build/check/lower.o
+$(CRISP_LOWER): $(CRISP_ROOT)/src/check/lower.cpp $(CRISP_ROOT)/src/check/ebmc.mk
+	@mkdir -p "$(@D)"
+	$(CXX) $(filter-out -Werror,$(CP_CXXFLAGS)) -I"$(CRISP_ROOT)/src" -I"$(CRISP_ROOT)/src/components/veval/src" -c $< -o $@
+
+-include $(CRISP_LOWER:.o=.d)
+
 # veval's lowering (spec 25), compiled with the engine's flags and linked
 # against the engine's hw-cbmc libraries. veval's own CMake target
 # hw_cbmc_frontend recompiles those hw-cbmc sources, so it is not used; of
@@ -39,7 +47,7 @@ $(CRISP_ROOT)/build/veval/%.o: $(CRISP_VEVAL)/%.cpp $(CRISP_ROOT)/src/check/ebmc
 
 -include $(CRISP_VEVAL_OBJECTS:.o=.d)
 
-$(CRISP_ROOT)/build/crisp: $(CRISP_OBJECTS) $(CRISP_ADAPTER) $(CRISP_VEVAL_OBJECTS) $(filter-out main.o,$(OBJ))
+$(CRISP_ROOT)/build/crisp: $(CRISP_OBJECTS) $(CRISP_ADAPTER) $(CRISP_LOWER) $(CRISP_VEVAL_OBJECTS) $(filter-out main.o,$(OBJ))
 	@set -e; staging=$$(mktemp -d "$(@D)/.link.XXXXXX"); \
 	trap 'rm -rf -- "$$staging"' EXIT; \
 	$(subst $@,"$$staging/crisp",$(LINKBIN)); mv -- "$$staging/crisp" "$@"

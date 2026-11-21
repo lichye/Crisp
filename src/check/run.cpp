@@ -4,13 +4,18 @@
 #include <util/process/ChildProcess.h>
 #include <util/process/CurrentExecutablePath.h>
 #include <util/process/ProcessGroup.h>
+#include <check/run/AncestorRecheck.h>
+#include <check/run/SelectDeepestBranches.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <system_error>
@@ -73,7 +78,7 @@ void set_memory_limit(std::uint64_t mib) {
 }
 
 [[noreturn]] void worker(const front::Task& task, const fs::path& scratch, Reporter reporter,
-                         EngineRun operation) {
+                         EngineRun operation, const std::set<std::string>& skip) {
     int status = 2;
     try {
 #ifndef __APPLE__
@@ -87,7 +92,7 @@ void set_memory_limit(std::uint64_t mib) {
         const struct rlimit no_core{0, 0};
         if (::setrlimit(RLIMIT_CORE, &no_core) < 0) throw os_error("disable task core dumps");
         if (task.ram_mib) set_memory_limit(task.ram_mib->value);
-        if (run_engine(task, scratch, reporter, operation)) status = 0;
+        if (run_engine(task, scratch, reporter, operation, skip)) status = 0;
     } catch (const std::bad_alloc&) {
         std::fputs("EBMC exhausted available memory\n", stderr);
     } catch (const std::exception& error) {
@@ -102,7 +107,8 @@ void set_memory_limit(std::uint64_t mib) {
 }
 
 veval::util::GroupWait run_worker(const front::Task& task, const fs::path& scratch,
-                                 Clock::time_point deadline, std::string& events, EngineRun operation) {
+                                 Clock::time_point deadline, std::string& events, EngineRun operation,
+                                 const std::set<std::string>& skip = {}) {
     Pipe pipe;
     std::string error;
     for (int& fd : pipe.fd)
@@ -114,7 +120,7 @@ veval::util::GroupWait run_worker(const front::Task& task, const fs::path& scrat
     if (pid < 0) throw os_error("start EBMC");
     if (pid == 0) {
         pipe.close_end(0);
-        worker(task, scratch, {pipe.fd[1]}, operation);
+        worker(task, scratch, {pipe.fd[1]}, operation, skip);
     }
     pipe.close_end(1);
     const auto wait = veval::util::waitForProofContext(pid, deadline, std::chrono::milliseconds(5),
@@ -151,18 +157,11 @@ void check_options(const front::Task& task) {
                                  ": [options] level word: yices-smt2 not found in PATH; "
                                  "install yices or add its directory to PATH");
     }
-    auto tool = [](const char* name, front::ToolUse setting) {
-        if (setting == front::ToolUse::only)
-            throw std::runtime_error(std::string(name) + " only is not supported");
-        if (setting == front::ToolUse::on)
-            std::cout << "  " << name << " is not connected; continuing with EBMC\n";
-    };
     if (task.smart.value == front::ToolUse::only)
         throw std::runtime_error("smart only is not supported");
     if (task.smart.source && task.smart.value == front::ToolUse::on &&
         (!task.includes.empty() || !task.defines.empty()))
         throw std::runtime_error("smart on does not support [design] include or define yet");
-    tool("veval", task.veval.value);
 }
 
 struct Property {
@@ -171,6 +170,7 @@ struct Property {
 
 struct TaskEvents {
     std::vector<Property> properties;
+    std::vector<std::string> missing; // veval: "instance\tassumption\treason"
     std::vector<std::string> undriven;
 };
 
@@ -184,6 +184,8 @@ TaskEvents read_events(const std::string& events) {
     while (input >> index >> status >> std::quoted(detail) && input.get() == '\n') {
         if (status == "undriven")
             result.undriven.push_back(detail);
+        else if (status == "missing")
+            result.missing.push_back(detail);
         else if (status == "pending" && index == properties.size())
             properties.push_back({detail, status, {}});
         else {
@@ -203,14 +205,18 @@ fs::path task_output_dir(const front::Task& task) {
     return fs::path("crisp-out") / dir;
 }
 
-fs::path wave_path(const front::Task& task, const std::string& name) {
+std::string file_name(const std::string& name) {
     std::string file;
     for (char c : name) {
         if (c == '/') file += "%2F";
         else if (c == '%') file += "%25";
         else file += c;
     }
-    return task_output_dir(task) / (file + ".vcd");
+    return file;
+}
+
+fs::path wave_path(const front::Task& task, const std::string& name) {
+    return task_output_dir(task) / (file_name(name) + ".vcd");
 }
 
 // Rename publishes a complete trace and replaces an existing file atomically.
@@ -399,6 +405,217 @@ void mine(const front::Task& task, const fs::path& scratch, Clock::time_point de
         throw std::runtime_error("SMART output exceeded the task timeout");
     std::cout << "  SMART assertions  " << output.string() << '\n';
 }
+
+// ---- veval (spec 25) ----
+
+// One assertion of a veval product: a source property carried to an instance.
+struct VevalJob {
+    std::string property, instance, wrapper, label;
+    fs::path product;
+    std::size_t depth = 0;
+    std::string unsupported; // what the check needs that Crisp does not give its engine yet
+};
+
+// veval writes one SystemVerilog product per instance. Its comments name the
+// instance and, before each assertion, the source property it carries.
+std::vector<VevalJob> read_products(const fs::path& dir) {
+    std::vector<fs::path> files;
+    if (fs::is_directory(dir))
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            const auto name = entry.path().filename().string();
+            if (name.size() > 8 && name.compare(name.size() - 8, 8, "_spec.sv") == 0) files.push_back(entry.path());
+        }
+    std::sort(files.begin(), files.end());
+    static const std::regex instance(R"(^// instance:\s*(\S+))"), depth(R"(^// depth:\s*(\d+))"),
+        module(R"(^module\s+(\w+))"), from(R"(^\s*// from:\s*(\S+))"),
+        assertion(R"(^\s*(\w+):\s*assert\s+property\b)");
+    std::vector<VevalJob> jobs;
+    for (const auto& file : files) {
+        std::ifstream in(file);
+        VevalJob product;
+        product.product = fs::absolute(file);
+        std::vector<std::pair<std::string, std::string>> labels; // (source property, label)
+        std::string source;
+        bool observation = false, premise = false;
+        std::smatch match;
+        for (std::string line; std::getline(in, line);) {
+            if (std::regex_search(line, match, instance)) product.instance = match[1];
+            else if (std::regex_search(line, match, depth)) product.depth = std::stoul(match[1]);
+            else if (product.wrapper.empty() && std::regex_search(line, match, module)) product.wrapper = match[1];
+            else if (std::regex_search(line, match, from)) source = match[1];
+            else if (std::regex_search(line, match, assertion)) labels.emplace_back(source, match[1]);
+            if (line.rfind("// observation:", 0) == 0) observation = true;
+            if (line.find("// premise:") != std::string::npos) premise = true;
+        }
+        if (observation) product.unsupported = "internal observation";
+        else if (premise) product.unsupported = "an environment premise (reset or clamp)";
+        for (const auto& [property, label] : labels) {
+            auto job = product;
+            job.property = property;
+            job.label = label;
+            jobs.push_back(job);
+        }
+    }
+    return jobs;
+}
+
+std::string first_line(const fs::path& file) {
+    std::ifstream in(file);
+    std::string line;
+    std::getline(in, line);
+    return line;
+}
+
+struct VevalResult {
+    std::vector<Property> lines;   // one per assertion veval saw, in source order
+    std::set<std::string> decided; // proved or passed by a local check
+    bool failed = false, timed_out = false;
+};
+
+// Lower in one worker; then check each landing in its own worker, deepest
+// first, moving up one level after a local counterexample (algorithm 1).
+VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::time_point deadline,
+                      const std::string& timeout) {
+    VevalResult result;
+    std::string events;
+    const auto lowered = run_worker(task, scratch, deadline, events, EngineRun::lower);
+    const auto lowering = read_events(events);
+    if (lowered.timedOut) {
+        result.timed_out = true;
+        for (const auto& p : lowering.properties) result.lines.push_back({p.name, "unknown", timeout + " (veval)"});
+        return result;
+    }
+    if (!WIFEXITED(lowered.status) || WEXITSTATUS(lowered.status) != 0) {
+        result.failed = true;
+        return result;
+    }
+    std::map<std::string, std::string> missing; // instance -> lowered assumptions the check lacks
+    for (const auto& record : lowering.missing) {
+        const auto tab = record.find('\t'), second = record.find('\t', tab + 1);
+        auto& list = missing[record.substr(0, tab)];
+        list += (list.empty() ? "" : ", ") + record.substr(tab + 1, second - tab - 1) + " (" +
+                record.substr(second + 1) + ")";
+    }
+    const auto without = [&](const std::string& instance) {
+        const auto found = missing.find(instance);
+        return found == missing.end() ? std::string() : "; checked without assumption " + found->second;
+    };
+
+    const auto jobs = read_products(scratch / "veval");
+    using veval::verification::SourceInstance;
+    std::map<SourceInstance, std::string> ids;
+    std::set<SourceInstance> candidates;
+    std::set<std::string> instances;
+    for (std::size_t i = 0; i < jobs.size(); ++i) {
+        ids[{jobs[i].property, jobs[i].instance}] = std::to_string(i);
+        candidates.insert({jobs[i].property, jobs[i].instance});
+        instances.insert(jobs[i].instance);
+    }
+    std::map<std::string, std::string> parents; // nearest enclosing instance with a landing
+    for (const auto& instance : instances) {
+        for (auto up = instance; up.rfind('.') != std::string::npos;) {
+            up.erase(up.rfind('.'));
+            if (instances.count(up)) {
+                parents[instance] = up;
+                break;
+            }
+        }
+    }
+    std::vector<std::size_t> work;
+    for (const auto& leaf : veval::verification::deepestBranchLandings(candidates, parents))
+        work.push_back(std::stoul(ids.at(leaf)));
+
+    std::map<std::string, Property> decided;
+    std::map<std::string, std::vector<std::string>> notes;
+    std::size_t checks = 0;
+    while (!work.empty()) {
+        const auto next = std::max_element(work.begin(), work.end(),
+                                           [&](auto a, auto b) { return jobs[a].depth < jobs[b].depth; });
+        const auto& job = jobs[*next];
+        work.erase(next);
+        if (decided.count(job.property)) continue;
+        if (Clock::now() >= deadline) {
+            result.timed_out = true;
+            break;
+        }
+        if (!job.unsupported.empty()) {
+            notes[job.property].push_back(job.instance + ": no local conclusion, its check needs " + job.unsupported +
+                                          ", which Crisp does not support yet");
+            continue;
+        }
+        auto local = task;
+        local.files.push_back({job.product, task.veval.source});
+        local.top = front::Setting<std::string>{job.wrapper, task.veval.source};
+        local.reset.reset();
+        local.clock.reset();
+        local.params.clear();
+        local.properties = {{job.wrapper + "." + job.label, task.veval.source}};
+        local.smart = {front::ToolUse::off, {}};
+        local.veval = {front::ToolUse::off, {}};
+        const auto dir = scratch / "veval" / ("check" + std::to_string(checks++));
+        fs::create_directories(dir);
+        std::string local_events;
+        const auto wait = run_worker(local, dir, deadline, local_events, EngineRun::solve);
+        if (wait.timedOut) {
+            result.timed_out = true;
+            break;
+        }
+        const auto checked = read_events(local_events);
+        std::string status = "error", detail = "EBMC returned no result";
+        if (checked.properties.size() == 1 && checked.properties.front().status != "pending") {
+            status = checked.properties.front().status;
+            detail = checked.properties.front().detail;
+        }
+        if (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0) {
+            status = "error";
+            detail = "EBMC failed: " + first_line(dir / "diagnostics.log");
+        }
+        if (status == "proved") {
+            decided[job.property] = {job.property, "proved", "proved in " + job.instance + " (veval)" + without(job.instance)};
+        } else if (status == "passed") {
+            decided[job.property] = {job.property, "passed",
+                                     "passed in " + job.instance + " (veval), " + detail + without(job.instance)};
+        } else if (status == "refuted") {
+            const auto wave = task_output_dir(task) / "veval" / file_name(job.property) / (file_name(job.instance) + ".vcd");
+            fs::create_directories(wave.parent_path());
+            if (publish_file(dir / "0.vcd", wave, deadline))
+                notes[job.property].push_back("local counterexample in " + job.instance + " " + wave.string() +
+                                              without(job.instance));
+            const auto parent = veval::verification::ancestorRecheck({job.property, job.instance}, "completed",
+                                                                     "refuted", ids, parents, task.top->value);
+            if (!parent.empty()) work.push_back(std::stoul(parent));
+        } else {
+            notes[job.property].push_back(job.instance + ": no local conclusion (" + detail + ")" + without(job.instance));
+        }
+    }
+
+    for (const auto& p : lowering.properties) {
+        if (const auto found = decided.find(p.name); found != decided.end()) {
+            result.lines.push_back(found->second);
+            result.decided.insert(p.name);
+            continue;
+        }
+        std::string detail;
+        if (p.status == "unlowered") detail = p.detail;
+        for (const auto& note : notes[p.name]) detail += (detail.empty() ? "" : "; ") + note;
+        if (result.timed_out) detail = timeout + (detail.empty() ? "" : "; " + detail);
+        else if (detail.empty()) detail = "no landing";
+        result.lines.push_back({p.name, "unknown", "veval: " + detail});
+    }
+    return result;
+}
+
+void print_line(const Property& p, Summary& summary, Clock::time_point start) {
+    if (p.status == "proved") ++summary.proved;
+    else if (p.status == "passed") ++summary.passed;
+    else if (p.status == "refuted") ++summary.refuted;
+    else ++summary.unknown;
+    const std::chrono::duration<double> elapsed = Clock::now() - start;
+    std::cout << "  " << p.name << "  " << p.status << "  " << std::fixed << std::setprecision(3) << elapsed.count()
+              << " s";
+    if (!p.detail.empty()) std::cout << "  " << p.detail;
+    std::cout << '\n';
+}
 } // namespace
 
 void Reporter::send(std::size_t index, const char* status, const std::string& detail) const {
@@ -427,6 +644,30 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         summary.error = true;
         return;
     }
+    const auto timeout = "timeout after " + std::to_string(seconds) + " s";
+    // veval on / only, written explicitly like smart on (spec 25).
+    std::set<std::string> decided;
+    if (task.veval.source && task.veval.value != front::ToolUse::off) {
+        auto result = run_veval(task, scratch.path, deadline, timeout);
+        if (result.failed) {
+            summary.error = true;
+            std::cerr << "crisp: veval could not lower the design\n";
+            std::ifstream log(scratch.path / "diagnostics.log");
+            if (log.peek() != std::ifstream::traits_type::eof()) std::cerr << log.rdbuf();
+            return;
+        }
+        const bool only = task.veval.value == front::ToolUse::only;
+        for (const auto& line : result.lines)
+            if (only || result.decided.count(line.name)) print_line(line, summary, start);
+        if (only) {
+            if (result.lines.empty()) {
+                summary.incomplete = true;
+                std::cout << "  no assertions\n";
+            }
+            return;
+        }
+        decided = std::move(result.decided); // the whole design checks the rest
+    }
     const auto wait = [&] {
         if (task.smart.source && task.smart.value == front::ToolUse::on) {
             // SMART also consumes reset and runs checks. Validate before starting it.
@@ -438,7 +679,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
             }
             mine(task, scratch.path, deadline);
         }
-        return run_worker(task, scratch.path, deadline, events, EngineRun::solve);
+        return run_worker(task, scratch.path, deadline, events, EngineRun::solve, decided);
     }();
     auto reports = read_events(events);
     const bool reject_undriven = task.undriven.value == front::Undriven::error;
@@ -450,14 +691,13 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         std::cerr << detail << '\n';
     }
     auto& properties = reports.properties;
-    const auto timeout = "timeout after " + std::to_string(seconds) + " s";
     bool diagnostics = failed;
     if (failed) {
         summary.error = true;
         if (!wait.timedOut && WIFSIGNALED(wait.status))
             std::cerr << "crisp: EBMC terminated by signal " << WTERMSIG(wait.status) << '\n';
     }
-    if (properties.empty() && !failed) {
+    if (properties.empty() && !failed && decided.empty()) {
         summary.incomplete = true;
         std::cout << (wait.timedOut ? "  unknown  " + timeout + " before assertion discovery\n" : "  no assertions\n");
     }
@@ -478,15 +718,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
             std::cerr << "crisp: " << p.name << ": " << p.detail << '\n';
             p.status = "unknown";
         }
-        if (p.status == "proved") ++summary.proved;
-        else if (p.status == "passed") ++summary.passed;
-        else if (p.status == "refuted") ++summary.refuted;
-        else ++summary.unknown;
-        const std::chrono::duration<double> elapsed = Clock::now() - start;
-        std::cout << "  " << p.name << "  " << p.status << "  " << std::fixed << std::setprecision(3)
-                  << elapsed.count() << " s";
-        if (!p.detail.empty()) std::cout << "  " << p.detail;
-        std::cout << '\n';
+        print_line(p, summary, start);
     }
     if (diagnostics) {
         std::ifstream log(scratch.path / "diagnostics.log");
