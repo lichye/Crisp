@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <regex>
 #include <set>
@@ -219,6 +220,54 @@ fs::path task_output_dir(const front::Task& task) {
         throw std::runtime_error("cannot use '" + dir + "' as an output directory name");
     return fs::path("crisp-out") / dir;
 }
+
+// Only the parent writes this run's file. A flushed, newline-terminated row
+// is available to readers even if the next worker and its parent are killed.
+class TaskProgress {
+    std::string path;
+    std::unique_ptr<FILE, decltype(&std::fclose)> stream{nullptr, &std::fclose};
+
+    void append(const std::string& line) {
+        if (std::fwrite(line.data(), 1, line.size(), stream.get()) != line.size() || std::fflush(stream.get()) != 0)
+            throw std::system_error(errno, std::generic_category(), "write " + path);
+    }
+
+public:
+    explicit TaskProgress(const fs::path& dir) : path((dir / "progress-XXXXXX.tsv").string()) {
+        std::error_code error;
+        fs::create_directories(dir, error);
+        if (error) throw std::system_error(error, "create " + path);
+        const int fd = ::mkstemps(path.data(), 4);
+        if (fd < 0) throw std::system_error(errno, std::generic_category(), "create " + path);
+        stream.reset(::fdopen(fd, "w"));
+        if (!stream) {
+            const int reason = errno;
+            ::close(fd);
+            throw std::system_error(reason, std::generic_category(), "open " + path);
+        }
+        append("stage\tproperty\tinstance\tstatus\tdetail\n");
+        std::cout << "  progress  " << path << std::endl;
+    }
+
+    void record(std::string_view stage, const Property& p, std::string_view instance = {}) {
+        std::string row;
+        const std::string_view fields[] = {stage, p.name, instance, p.status, p.detail};
+        for (auto field : fields) {
+            for (char c : field) {
+                switch (c) {
+                case '\\': row += "\\\\"; break;
+                case '\t': row += "\\t"; break;
+                case '\r': row += "\\r"; break;
+                case '\n': row += "\\n"; break;
+                default: row += c;
+                }
+            }
+            row += '\t';
+        }
+        row.back() = '\n';
+        append(row);
+    }
+};
 
 std::string file_name(const std::string& name) {
     std::string file;
@@ -490,7 +539,7 @@ struct VevalResult {
 // Lower in one worker; then check each landing in its own worker, deepest
 // first, moving up one level after a local counterexample (algorithm 1).
 VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::time_point deadline,
-                      const std::string& timeout) {
+                      const std::string& timeout, TaskProgress& progress) {
     VevalResult result;
     std::string events;
     const auto lowered = run_worker(task, scratch, deadline, events, EngineRun::lower);
@@ -628,10 +677,14 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             status = checked.properties.front().status;
             detail = checked.properties.front().detail;
         }
+        const auto context = without(job.instance);
         if (wait.timedOut) {
             result.timed_out = true;
-            if (status == "checking")
-                notes[job.property].push_back(job.instance + ": " + detail + "; vacuity check timed out");
+            if (status == "checking") {
+                detail += "; vacuity check timed out";
+                notes[job.property].push_back(job.instance + ": " + detail);
+            } else detail = timeout;
+            progress.record("local", {job.property, "unknown", detail + context}, job.instance);
             break;
         }
         if (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0) {
@@ -644,23 +697,36 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             }
         }
         if (status == "proved") {
-            decided[job.property] = {job.property, "proved", "proved in " + job.instance + " (veval)" + without(job.instance)};
+            decided[job.property] = {job.property, "proved", "proved in " + job.instance + " (veval)" + context};
         } else if (status == "passed") {
             decided[job.property] = {job.property, "passed",
-                                     "passed in " + job.instance + " (veval), " + detail + without(job.instance)};
+                                     "passed in " + job.instance + " (veval), " + detail + context};
         } else if (status == "vacuous") {
-            decided[job.property] = {job.property, status, detail + " in " + job.instance + " (veval)" + without(job.instance)};
+            decided[job.property] = {job.property, status, detail + " in " + job.instance + " (veval)" + context};
         } else if (status == "refuted") {
             const auto wave = task_output_dir(task) / "veval" / file_name(job.property) / (file_name(job.instance) + ".vcd");
-            fs::create_directories(wave.parent_path());
-            if (publish_file(dir / "0.vcd", wave, deadline))
-                notes[job.property].push_back("local counterexample in " + job.instance + " " + wave.string() +
-                                              without(job.instance));
+            if (publish_file(dir / "0.vcd", wave, deadline)) {
+                detail = "local counterexample in " + job.instance + " " + wave.string() + context;
+                notes[job.property].push_back(detail);
+            } else {
+                detail = timeout + " publishing local VCD" + context;
+            }
             const auto parent = veval::verification::ancestorRecheck({job.property, job.instance}, "completed",
                                                                      "refuted", ids, parents, task.top->value);
             if (!parent.empty()) work.push_back(std::stoul(parent));
         } else {
-            notes[job.property].push_back(job.instance + ": no local conclusion (" + detail + ")" + without(job.instance));
+            notes[job.property].push_back(job.instance + ": no local conclusion (" + detail + ")" + context);
+            if (status == "checking") {
+                status = "unknown";
+                detail += "; vacuity check returned no result";
+            }
+            detail += context;
+        }
+        if (const auto found = decided.find(job.property); found != decided.end()) {
+            progress.record("local", found->second, job.instance);
+            progress.record("final", found->second);
+        } else {
+            progress.record("local", {job.property, status, detail}, job.instance);
         }
     }
 
@@ -676,6 +742,11 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
         if (result.timed_out) detail = timeout + (detail.empty() ? "" : "; " + detail);
         else if (detail.empty()) detail = "no landing";
         result.lines.push_back({p.name, "unknown", "veval: " + detail});
+        // In only mode this is the CLI's final decision. A deadline alone
+        // supplies no evidence for landings that never returned a result.
+        if (task.veval.value == front::ToolUse::only &&
+            (!result.timed_out || p.status == "unlowered" || !notes[p.name].empty()))
+            progress.record("final", result.lines.back());
     }
     return result;
 }
@@ -769,6 +840,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     const auto max_seconds = std::chrono::duration_cast<std::chrono::seconds>(Clock::time_point::max() - start);
     const auto seconds = std::min<std::uint64_t>(task.timeout_seconds.value, max_seconds.count());
     const auto deadline = start + std::chrono::seconds(seconds);
+    TaskProgress progress(task_output_dir(task));
     check_options(task);
     Scratch scratch;
     std::string error, events;
@@ -782,7 +854,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     // veval on / only (spec 25).
     std::set<std::string> decided;
     if (task.veval.value != front::ToolUse::off) {
-        auto result = run_veval(task, scratch.path, deadline, timeout);
+        auto result = run_veval(task, scratch.path, deadline, timeout, progress);
         if (result.failed) {
             summary.error = true;
             std::cerr << "crisp: veval could not lower the design\n";
@@ -839,6 +911,9 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     }
     for (std::size_t i = 0; i < properties.size(); ++i) {
         auto& p = properties[i];
+        // A checking event carries the original proof. The parent settles it
+        // below after waiting. Discovery alone carries no assertion result.
+        const bool reported = p.status != "pending";
         if (p.status == "refuted") {
             auto dest = wave_path(task, p.name);
             if (publish_file(scratch.path / (std::to_string(i) + ".vcd"), dest, deadline))
@@ -861,6 +936,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
             std::cerr << "crisp: " << p.name << ": " << p.detail << '\n';
             p.status = "unknown";
         }
+        if (reported) progress.record("final", p);
         print_line(p, summary, start);
     }
     if (diagnostics) {
