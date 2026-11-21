@@ -83,7 +83,7 @@ run 1 reset without_reset
 has 'reset_counter.p_range  refuted'
 valid_vcd crisp-out/reset_without_reset/reset_counter.p_range.vcd
 
-for mode in bmc kind pdr; do
+for mode in bmc kind pdr bmc_word kind_word; do
     run 1 reset-low "$mode"
     has 'top.p  refuted'
     wave="crisp-out/reset-low_$mode/top.p.vcd"
@@ -95,9 +95,15 @@ for mode in bmc kind pdr; do
         exit 1
     fi
 done
-run 0 reset-high bmc
-has 'top.p  passed'
-for mode in kind pdr; do
+# level word (spec 19) agrees with the bit level, including the waveform.
+for mode in bmc kind; do
+    cmp "crisp-out/reset-low_$mode/top.p.vcd" "crisp-out/reset-low_${mode}_word/top.p.vcd"
+done
+for mode in bmc bmc_word; do
+    run 0 reset-high "$mode"
+    has 'top.p  passed'
+done
+for mode in kind pdr kind_word; do
     run 0 reset-high "$mode"
     has 'top.p  proved'
 done
