@@ -172,6 +172,7 @@ int runLowering(const CommandLineOptions& invocation) {
         return veval::lowering::lowerProperties(set, edges, aliases, attribution, blackboxes,
                                               &stoppedAbove, invocation.generationThreads.value_or(1), &definitions);
     });
+    veval::lowering::prepareProductFunctions(transports, ns);
     if (invocation.placement == "root") {
         std::set<std::string> boundAssumptions;
         for (auto& row : transports) {

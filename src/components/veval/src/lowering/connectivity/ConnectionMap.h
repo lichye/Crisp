@@ -5,6 +5,7 @@
 #define VEVAL_LOWERING_CONNECTIONMAP_H
 
 #include "lowering/Symbolic/SignalAliases.h"
+#include "util/verilog/ExpressionPrinter.h"
 
 #include <util/std_expr.h>
 
@@ -91,10 +92,7 @@ struct InstanceEdge {
     std::set<std::string> inputs;
 
     // Local-product declarations use these spellings for non-flat port types.
-    struct ProductPortType {
-        std::string prefix, suffix;
-        std::string scope, name, declarationFile;
-    };
+    using ProductPortType = frontend::VerilogTypeDeclaration;
     std::map<std::string, ProductPortType> productPortTypes;
     std::string productPortError;
 };
