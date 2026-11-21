@@ -3,6 +3,7 @@
 #include <ebmc/bmc.h>
 #include <ebmc/ebmc_error.h>
 #include <ebmc/format_hooks.h>
+#include <ebmc/instrument_buechi.h>
 #include <ebmc/property_checker.h>
 #include <langapi/mode.h>
 #include <util/arith_tools.h>
@@ -198,11 +199,12 @@ struct UndrivenError {};
 // The pinned IC3 engine returns a verdict without a witness. Reconstruct a
 // reachable counterexample for that exact assertion under the same deadline.
 trans_tracet reconstruct(const cmdlinet& cmd, const transition_systemt& system,
-                         const Property& property, ui_message_handlert& messages) {
-    auto target = ebmc_propertiest::from_command_line(cmd, system, messages);
+                         ebmc_propertiest target, const Property& property, ui_message_handlert& messages) {
     target.properties.remove_if([&](const auto& p) {
         return !p.is_assumption() && p.identifier != property.identifier;
     });
+    for (auto& p : target.properties)
+        if (!p.is_assumption()) p.unknown(); // IC3 has already marked this goal refuted.
     const auto factory = ebmc_solver_factory(cmd);
     for (std::size_t bound = 1; bound < std::numeric_limits<unsigned>::max(); bound *= 2) {
         auto result = bmc(bound, false, false, false, system, target, factory, messages);
@@ -269,11 +271,14 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
     }
     if (ids.empty()) return;
 
-    auto check_batch = [&](ebmc_propertiest& batch) {
-        auto checked = property_checker(cmd, *system, batch, messages);
+    const bool pdr = task.mode.value == Mode::pdr;
+    auto check_batch = [&](transition_systemt& model, ebmc_propertiest& batch) {
+        if (pdr || task.mode.value == Mode::kind)
+            instrument_buechi(model, batch, pdr, messages);
+        auto checked = property_checker(cmd, model, batch, messages);
         if (checked.status != property_checker_resultt::statust::VERIFICATION_RESULT)
             throw std::runtime_error("EBMC did not return verification results");
-        const namespacet ns(system->symbol_table);
+        const namespacet ns(model.symbol_table);
         messaget message(messages);
         for (auto& p : checked.properties) {
             if (p.is_assumption()) {
@@ -288,7 +293,10 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
                 verdict = "error";
                 reason = p.location.as_string() + ": " + p.status_as_string();
             } else if (refuted(p)) {
-                if (!p.witness_trace) p.witness_trace = reconstruct(cmd, *system, p, messages);
+                if (!p.witness_trace) {
+                    auto target = pdr ? batch : ebmc_propertiest::from_command_line(cmd, model, messages);
+                    p.witness_trace = reconstruct(cmd, model, std::move(target), p, messages);
+                }
                 write_wave(*p.witness_trace, scratch / (std::to_string(index) + ".vcd"), message, ns);
                 verdict = "refuted";
             } else if (task.mode.value == Mode::bmc && (p.is_proved_with_bound() || p.is_proved())) {
@@ -307,8 +315,8 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
             reporter.send(index, verdict.c_str(), reason);
         }
     };
-    if (task.mode.value != Mode::pdr || ids.size() == 1) {
-        check_batch(properties);
+    if (!pdr || ids.size() == 1) {
+        check_batch(*system, properties);
         return;
     }
     // Publish each PDR verdict before checking the next property in case the task times out.
@@ -319,7 +327,11 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
         if (p.is_assumption() || p.is_disabled()) continue;
         auto single = assumptions;
         single.properties.push_back(p);
-        check_batch(single);
+        // The monitor and the checker can both change the model. Start each PDR
+        // query from the elaborated design with its original reset and assumptions.
+        auto model = *system;
+        model.main_symbol = &model.symbol_table.lookup_ref(system->main_symbol->name);
+        check_batch(model, single);
     }
 }
 } // namespace

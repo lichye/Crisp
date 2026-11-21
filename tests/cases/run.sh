@@ -7,7 +7,7 @@ if ! command -v yices-smt2 >/dev/null; then
     echo 'tests/cases/run.sh: yices-smt2 not found in PATH; install yices or add its directory to PATH' >&2
     exit 1
 fi
-# veval on / only needs Spot's ltl2tgba (spec 25); the tests need it.
+# veval and the kind/PDR Büchi conversion need Spot's ltl2tgba.
 if ! command -v ltl2tgba >/dev/null; then
     echo "tests/cases/run.sh: ltl2tgba not found in PATH; install Spot or add its bin directory to PATH" >&2
     exit 1
@@ -278,6 +278,28 @@ has 'top.p_still  refuted'
 reported 0 pdr proved top.p_one top.p_two top.p_still
 has '1 task, 3 proved, 0 passed, 0 refuted, 0 unknown'
 
+# Preserve temporal assumptions, target names, and independent PDR witnesses.
+for mode in kind pdr; do
+    run 0 buechi "$mode"
+    has 'buechi.p_quiet  proved'
+    run 1 buechi "free_$mode"
+    has 'buechi.p_quiet  refuted'
+    valid_vcd "crisp-out/buechi_free_$mode/buechi.p_quiet.vcd"
+done
+run 1 buechi multi_pdr
+has 'buechi.p_quiet  proved'
+has 'buechi.p_next  refuted'
+has 'buechi.p_later  refuted'
+has '1 task, 1 proved, 0 passed, 2 refuted, 0 unknown'
+for target in p_next p_later; do
+    valid_vcd "crisp-out/buechi_multi_pdr/buechi.$target.vcd"
+done
+grep -Fxq '#1' crisp-out/buechi_multi_pdr/buechi.p_next.vcd
+! grep -Fxq '#2' crisp-out/buechi_multi_pdr/buechi.p_next.vcd
+grep -Fxq '#2' crisp-out/buechi_multi_pdr/buechi.p_later.vcd
+run 2 buechi unsupported_contract
+has 'unsupported Buechi assumption buechi.live' err
+
 properties="$root/tests/cases/properties.salt"
 for unmatched in 'nomatch 32 top.absent*' 'dot 33 top?p_one'; do
     read -r task line pattern <<< "$unmatched"
@@ -485,10 +507,15 @@ veval_only_line=$(grep -nx 'veval only' "$root/tests/cases/veval.salt" | cut -d:
 has "crisp: $root/tests/cases/veval.salt:$veval_only_line: [options] veval only: ltl2tgba not found in PATH; install Spot (https://spot.lre.epita.fr/install.html) or add its bin directory to PATH" err
 [[ $(wc -l < err) == 1 ]]
 has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
+# The direct engine also reports its dependency before starting a check.
+status=0
+timeout 11 env PATH="$work/no-spot" "$root/build/crisp" "$root/tests/cases/buechi.salt" pdr >out 2>err || status=$?
+[[ $status == 2 ]]
+has '[options] mode pdr: ltl2tgba not found in PATH' err
 # Without a veval line the task runs as before.
 run 0 token prove
 if grep -Fq 'not connected' out; then
     cat out >&2
     exit 1
 fi
-echo 'EBMC cases passed (Specs 3, 8, 11, 18, 19, 20, 23, and 25).'
+echo 'EBMC cases passed (Specs 3, 8, 11, 18, 19, 20, 23, 25, and 29).'
