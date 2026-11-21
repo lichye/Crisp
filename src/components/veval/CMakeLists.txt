@@ -30,6 +30,18 @@ if(BUILD_TESTING)
         add_test(NAME veval.array_write.${top} COMMAND veval_nested_array_writes_test
             "${top}" "${CMAKE_CURRENT_SOURCE_DIR}/test/nested_array_writes.sv")
     endforeach()
+    add_executable(veval_mixed_array_drivers_test test/MixedArrayDrivers.cpp)
+    target_link_libraries(veval_mixed_array_drivers_test PRIVATE veval_frontend)
+    foreach(top IN ITEMS mixed mixed_comb static_outer_prefix)
+        add_test(NAME veval.array_drivers.${top} COMMAND veval_mixed_array_drivers_test
+            "${top}" "${CMAKE_CURRENT_SOURCE_DIR}/test/mixed_array_drivers.sv")
+    endforeach()
+    foreach(top IN ITEMS overlap dynamic_overlap)
+        add_test(NAME veval.array_drivers.${top}
+            COMMAND "${CMAKE_COMMAND}" "-DVEVAL=$<TARGET_FILE:veval>"
+                "-DTOP=${top}" "-DDESIGN=${CMAKE_CURRENT_SOURCE_DIR}/test/mixed_array_drivers.sv"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/test/RejectMixedArrayDrivers.cmake")
+    endforeach()
 endif()
 
 add_library(veval_sva STATIC ${VEVAL_SRC}/frontend/sva/PropertyMonitor.cpp

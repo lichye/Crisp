@@ -1126,6 +1126,8 @@ void verilog_synthesist::assignment_rec(
   // get identifier
   const symbolt &symbol=assignment_symbol(lhs);
 
+  record_driver(symbol, lhs, false);
+
   if(symbol.type.id()==ID_verilog_realtime)
   {
     // we silently ignore these
@@ -1548,15 +1550,17 @@ void verilog_synthesist::assignment_member_rec(
     mp_integer index;
     if(to_integer_non_constant(tmp_lhs_op1, index))
     {
-      // done
-      add_assignment_member(lhs, member, data);
+      // An unknown inner index covers the whole statically selected
+      // outer element, not the entire variable.
+      membert prefix;
+      assignment_member_rec(to_binary_expr(lhs).op0(), prefix, data);
     }
     else
     {
       // do the value
-      member.push_back(index);
+      member.push_front(index);
       assignment_member_rec(to_binary_expr(lhs).op0(), member, data);
-      member.pop_back();
+      member.pop_front();
     }
   }
   else if(lhs.id() == ID_verilog_non_indexed_part_select)
@@ -1585,17 +1589,17 @@ void verilog_synthesist::assignment_member_rec(
     if(from>to)
       std::swap(from, to);
 
-    member.push_back(mp_integer());
+    member.push_front(mp_integer());
 
     // now add the indexes in the range
     for(mp_integer i=from; i<=to; ++i)
     {
       // do the value
-      member.back()=i;
+      member.front()=i;
       assignment_member_rec(lhs_bv, member, data);
     }
 
-    member.pop_back();
+    member.pop_front();
   }
   else if(
     lhs.id() == ID_verilog_indexed_part_select_plus ||
@@ -1624,17 +1628,17 @@ void verilog_synthesist::assignment_member_rec(
         << "failed to convert part select width";
     }
 
-    member.push_back(mp_integer());
+    member.push_front(mp_integer());
 
     // now add the indexes in the range
     for(mp_integer i = index; i <= index + width - 1; ++i)
     {
       // do the value
-      member.back() = i;
+      member.front() = i;
       assignment_member_rec(lhs_bv, member, data);
     }
 
-    member.pop_back();
+    member.pop_front();
   }
   else if(lhs.id() == ID_member)
   {
@@ -2726,50 +2730,75 @@ void verilog_synthesist::synth_force_rec(
   // get symbol
   const symbolt &symbol=assignment_symbol(lhs);
 
-  continuously_assigned.insert(symbol.name);
-  if(procedurally_assigned.count(symbol.name))
+  auto lhs_synth = synth_expr(lhs, symbol_statet::CURRENT);
+  auto rhs_synth = synth_expr(rhs, symbol_statet::CURRENT);
+  record_driver(symbol, lhs_synth, true);
+  if(
+    symbol.is_lvalue && symbol.type.id() == ID_array &&
+    to_verilog_array_type(symbol.type).is_unpacked())
+    local_symbols.insert(symbol.name);
+
+  // Keep unpacked variables assignable until their drivers are all known.
+  // Other assignments keep the original wire-demotion path.
+  if(
+    symbol.type.id() != ID_array ||
+    !to_verilog_array_type(symbol.type).is_unpacked() ||
+    !symbol.is_lvalue)
+  {
+    assignmentt &assignment = assignments[symbol.name];
+    assignment.type = event_guardt::COMBINATIONAL;
+
+    if(symbol.is_lvalue)
+    {
+      warning().source_location = symbol.location;
+      warning() << "Making " << symbol.display_name() << " a wire" << eom;
+      symbol_table_lookup(symbol.name).is_lvalue = false;
+      demoted_to_wire.insert(symbol.name);
+    }
+  }
+
+  equal_exprt equality{std::move(lhs_synth), std::move(rhs_synth)};
+  invars.push_back(std::move(equality));
+}
+
+void verilog_synthesist::record_driver(
+  const symbolt &symbol,
+  const exprt &lhs,
+  bool continuous)
+{
+  driver_elementt element;
+  if(
+    symbol.type.id() == ID_array &&
+    to_verilog_array_type(symbol.type).is_unpacked())
+  {
+    const exprt *part = &lhs;
+    while(!part->operands().empty())
+    {
+      const auto &base = part->operands().front();
+      if(base.id() == ID_symbol)
+      {
+        if(part->id() == ID_index)
+          element = numeric_cast<mp_integer>(
+            simplify_expr(to_index_expr(*part).index(), ns));
+        break;
+      }
+      part = &base;
+    }
+  }
+
+  auto &own = continuous ? continuously_assigned : procedurally_assigned;
+  const auto &other = continuous ? procedurally_assigned : continuously_assigned;
+  const auto existing = other.find(symbol.name);
+  if(
+    existing != other.end() &&
+    (!element || existing->second.count({}) || existing->second.count(element)))
   {
     throw errort().with_location(lhs.source_location())
       << "variable " << symbol.display_name()
       << " is written by both a continuous assignment and a procedural "
-         "block; not supported";
+         "block on overlapping elements";
   }
-
-  // turn into combinational assignment
-  assignmentt &assignment=assignments[symbol.name];
-
-  if(assignment.type==event_guardt::NONE)
-  {
-    assignment.type=event_guardt::COMBINATIONAL;
-  }
-  else if(assignment.type == event_guardt::CLOCK)
-  {
-    throw errort().with_location(lhs.source_location())
-      << "variable " << symbol.display_name() << " is clocked";
-  }
-  else if(assignment.type == event_guardt::COMBINATIONAL)
-  {
-    // leave as is
-  }
-  else
-    DATA_INVARIANT(false, "unexpected assignment type");
-
-  // If the symbol is marked as a state variable,
-  // turn it into a wire now.
-  if(symbol.is_lvalue)
-  {
-    warning().source_location = symbol.location;
-    warning() << "Making " << symbol.display_name() << " a wire" << eom;
-    symbolt &writeable_symbol = symbol_table_lookup(symbol.name);
-    writeable_symbol.is_lvalue = false;
-    demoted_to_wire.insert(symbol.name);
-  }
-
-  auto lhs_synth = synth_expr(lhs, symbol_statet::CURRENT);
-  auto rhs_synth = synth_expr(rhs, symbol_statet::CURRENT);
-
-  equal_exprt equality{std::move(lhs_synth), std::move(rhs_synth)};
-  invars.push_back(std::move(equality));
+  own[symbol.name].insert(std::move(element));
 }
 
 /*******************************************************************\
@@ -2790,18 +2819,6 @@ void verilog_synthesist::synth_assign(const verilog_assignt &statement)
   {
     throw errort().with_location(statement.source_location())
       << "unexpected assignment statement";
-  }
-
-  {
-    const symbolt &written = assignment_symbol(statement.lhs());
-    procedurally_assigned.insert(written.name);
-    if(continuously_assigned.count(written.name))
-    {
-      throw errort().with_location(statement.source_location())
-        << "variable " << written.display_name()
-        << " is written by both a continuous assignment and a procedural "
-           "block; not supported";
-    }
   }
 
   exprt lhs = statement.lhs();
@@ -4308,6 +4325,111 @@ exprt verilog_synthesist::symbol_expr(
   return result;
 }
 
+void verilog_synthesist::synth_mixed_array(
+  symbolt &symbol,
+  assignmentt &assignment,
+  transt &trans)
+{
+  const auto visible = symbol_expr(symbol, CURRENT);
+  const auto &array = to_verilog_array_type(visible.type());
+  const auto index_type = array.index_type();
+  const auto &continuous = continuously_assigned.at(symbol.name);
+  const auto &procedural = procedurally_assigned.at(symbol.name);
+
+  if(assignment.type == event_guardt::CLOCK)
+  {
+    // The public array keeps its name and RHS references. Separate storage
+    // holds the registered elements, so its transition cannot drive a wire.
+    const auto prefix = id2string(symbol.name) + "::clocked";
+    const auto suffix = std::to_string(symbol_table.next_unused_suffix(prefix));
+    symbolt storage = symbol;
+    storage.name = prefix + suffix;
+    storage.base_name = id2string(symbol.base_name) + "::clocked" + suffix;
+    storage.pretty_name = strip_verilog_root_prefix(storage.name);
+    storage.value = nil_exprt{};
+    storage.is_input = storage.is_output = false;
+    storage.is_auxiliary = storage.is_state_var = true;
+    CHECK_RETURN(!symbol_table.add(storage));
+    if(symbol_names->initialized)
+      symbol_names->names.insert(storage.name);
+
+    auto stored = symbol_expr(storage, CURRENT);
+    if(!assignment.init.value.is_nil())
+      synth_assignments(storage, CURRENT, assignment.init.value, trans.init());
+    if(assignment.next.value.is_nil())
+      assignment.next.value = stored;
+    synth_assignments(storage, NEXT, assignment.next.value, trans.trans());
+
+    auto before = stored;
+    before.id(ID_nondet_symbol);
+    before.set("initial_value", true);
+    for(const auto &element : continuous)
+    {
+      auto index = from_integer(*element, index_type);
+      auto wire = index_exprt{visible, index, array.element_type()};
+      before = with_exprt{std::move(before), std::move(index), std::move(wire)};
+    }
+    mixed_initial_reads.emplace(symbol.name, std::move(before));
+
+    for(mp_integer i = 0; i < array.size_int(); ++i)
+    {
+      if(continuous.count(i))
+        continue;
+      auto index = from_integer(i, index_type);
+      trans.invar().add_to_operands(equal_exprt{
+        index_exprt{visible, index, array.element_type()},
+        index_exprt{stored, index, array.element_type()}});
+    }
+  }
+  else
+  {
+    for(const auto &element : procedural)
+    {
+      auto index = from_integer(*element, index_type);
+      trans.invar().add_to_operands(equal_exprt{
+        index_exprt{visible, index, array.element_type()},
+        index_exprt{assignment.next.value, index, array.element_type()}});
+    }
+    mixed_initial_reads.emplace(symbol.name, visible);
+  }
+
+  symbol.is_lvalue = false;
+  symbol.is_state_var = false;
+}
+
+exprt verilog_synthesist::rewrite_initial_reads(const exprt &root)
+{
+  std::unordered_map<const void *, exprt> memo;
+  std::function<exprt(const exprt &)> rewrite = [&](const exprt &e) -> exprt
+  {
+    if(e.id() == ID_nondet_symbol && e.get_bool("initial_value"))
+    {
+      const auto &id = e.get(ID_identifier);
+      const auto mixed = mixed_initial_reads.find(id);
+      if(mixed != mixed_initial_reads.end())
+        return mixed->second;
+
+      if(e.get_bool("#veval_initial_continuous_read"))
+        return symbol_expr(symbol_table_lookup(id), CURRENT);
+    }
+    if(e.operands().empty())
+      return e;
+    const auto key = &e.get_sub();
+    if(const auto found = memo.find(key); found != memo.end())
+      return found->second;
+    auto result = e;
+    for(std::size_t i = 0; i < e.operands().size(); ++i)
+    {
+      auto child = rewrite(e.operands()[i]);
+      if(&child.read() != &e.operands()[i].read())
+        result.operands()[i] = std::move(child);
+    }
+    memo.emplace(key, result);
+    return result;
+  };
+  return rewrite(root);
+}
+
 /*******************************************************************\
 
 Function: verilog_synthesist::synth_assignments
@@ -4386,6 +4508,21 @@ void verilog_synthesist::synth_assignments(transt &trans)
       if(assignment.is_cycle_local)
         continue; // ignore
 
+      if(continuously_assigned.count(symbol.name))
+      {
+        if(procedurally_assigned.count(symbol.name))
+        {
+          synth_mixed_array(symbol, assignment, trans);
+          continue;
+        }
+        // Continuous constraints are already recorded in invars.
+        warning().source_location = symbol.location;
+        warning() << "Making " << symbol.display_name() << " a wire" << eom;
+        symbol.is_lvalue = false;
+        demoted_to_wire.insert(symbol.name);
+        continue;
+      }
+
       if(assignment.type==event_guardt::COMBINATIONAL)
       {
         warning().source_location = symbol.location;
@@ -4429,6 +4566,12 @@ void verilog_synthesist::synth_assignments(transt &trans)
     synth_assignments(symbol, CURRENT,
                       assignment.next.value,
                       trans.invar());
+  }
+
+  if(!mixed_initial_reads.empty() || has_initial_continuous_read)
+  {
+    trans.init() = rewrite_initial_reads(trans.init());
+    trans.invar() = rewrite_initial_reads(trans.invar());
   }
 
   // post-process initial state predicate to get rid
@@ -4510,6 +4653,11 @@ exprt verilog_synthesist::current_value(
       exprt result=exprt(ID_nondet_symbol, symbol.type);
       result.set(ID_identifier, symbol.name);
       result.set("initial_value", true);
+      if(continuously_assigned.count(symbol.name))
+      {
+        result.set("#veval_initial_continuous_read", true);
+        has_initial_continuous_read = true;
+      }
       return result;
     }
     else
@@ -4632,6 +4780,10 @@ transt verilog_synthesist::convert_module_items(const symbolt &symbol)
 
   // clean up
   assignments.clear();
+  continuously_assigned.clear();
+  procedurally_assigned.clear();
+  mixed_initial_reads.clear();
+  has_initial_continuous_read = false;
   invars.clear();
 
   // Add port-declared symbols to local_symbols, since ANSI-style

@@ -179,11 +179,17 @@ protected:
   // indistinguishable by the time the second driver is synthesised, and
   // whichever driver happens to come second is rejected.
   std::set<irep_idt> demoted_to_wire;
-  // veval: which variables a continuous assignment and which a procedural
-  // block writes. Both on one variable (`assign stage[0] = ...' beside
-  // `always_comb stage[1] = ...') lost the procedural writes, so it is
-  // refused rather than modelled.
-  std::set<irep_idt> continuously_assigned, procedurally_assigned;
+  // The longest static prefix at the outer unpacked-array dimension.
+  // An absent index covers the whole variable (including dynamic writes).
+  using driver_elementt = std::optional<mp_integer>;
+  using driver_elementst = std::set<driver_elementt>;
+  std::map<irep_idt, driver_elementst> continuously_assigned;
+  std::map<irep_idt, driver_elementst> procedurally_assigned;
+  void record_driver(const symbolt &, const exprt &, bool continuous);
+  void synth_mixed_array(symbolt &, assignmentt &, transt &);
+  std::map<irep_idt, exprt> mixed_initial_reads;
+  exprt rewrite_initial_reads(const exprt &);
+  mutable bool has_initial_continuous_read = false;
   
   // for assumes
   typedef std::list<exprt> invarst;
