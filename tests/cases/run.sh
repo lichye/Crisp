@@ -64,6 +64,9 @@ valid_vcd() {
 
 run 0 token prove
 has 'token_formal.p_no_conflict  proved'
+journal=$(progress_file)
+[[ $journal == crisp-out/token_prove/progress-*.tsv ]]
+grep -Fxq $'final\ttoken_formal.p_no_conflict\t\tproved\t' "$journal"
 run 3 token induction
 has 'token_formal.p_no_conflict  unknown'
 has 'k-induction inconclusive at depth 5'
