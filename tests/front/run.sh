@@ -8,6 +8,7 @@ if [[ ! -x $slang ]]; then
     echo "tests/front/run.sh: slang not found at $slang; run 'make slang' or set CRISP_SLANG" >&2
     exit 1
 fi
+if [[ $slang != /* ]]; then slang="$PWD/$slang"; fi
 tmp_base=${TMPDIR:-$root/build}
 mkdir -p -- "$tmp_base"
 scratch=$(mktemp -d "$tmp_base/crisp-front.XXXXXXXX")
@@ -104,4 +105,53 @@ cli 0 --help
 grep -Fq 'FILE.salt [TASK...]' "$capture/out"
 cli 0 --version
 [[ $(cat "$capture/out") == 'crisp 0.1.0' ]]
+
+# Install a copy of Crisp with a controlled source tree and sibling directory.
+# Distinct diagnostics identify which executable was actually invoked.
+layout="$scratch/lookup"
+mkdir -p "$layout/build" overrides
+cp -- "$root/build/crisp" "$layout/build/crisp"
+sed 's/^smart off/smart on/' ../cases/fifo.salt > ../cases/mining.salt
+
+stub() {
+    mkdir -p -- "$(dirname -- "$1")"
+    printf '#!/bin/sh\ncase "$0" in /*) ;; *) exit 1 ;; esac\necho "error: selected %s"\nexit 1\n' "$2" > "$1"
+    chmod +x "$1"
+}
+
+selected() {
+    local expected=$1 status=0
+    shift
+    env -u CRISP_SLANG -u CRISP_SMART "$@" "$layout/build/crisp" "$salt" "$task" \
+        > "$capture/out" 2> "$capture/err" || status=$?
+    if [[ $status != 2 ]] || ! grep -Fxq -- "error: selected $expected" "$capture/out" "$capture/err"; then
+        cat "$capture/out" "$capture/err" >&2
+        echo "executable lookup did not reach $expected (exit $status)" >&2
+        exit 1
+    fi
+}
+
+for tool in slang smart; do
+    settings=()
+    salt=../cases/fifo.salt
+    task=task2
+    fallback=src/components/slang/build/bin/slang
+    variable=CRISP_SLANG
+    if [[ $tool == smart ]]; then
+        settings=("CRISP_SLANG=$slang")
+        salt=../cases/mining.salt
+        task=task1
+        fallback=src/components/smartVerilog/build/smart
+        variable=CRISP_SMART
+    fi
+    stub "overrides/$tool" "$tool override"
+    stub "$layout/build/$tool" "$tool sibling"
+    stub "$layout/$fallback" "$tool source tree"
+    selected "$tool override" "${settings[@]}" "$variable=overrides/$tool"
+    selected "$tool sibling" "${settings[@]}"
+    mv -- "$layout/build/$tool" "$layout/$tool"
+    selected "$tool source tree" "${settings[@]}"
+    mkdir -- "$layout/build/$tool"
+    selected "$tool source tree" "${settings[@]}"
+done
 echo 'Front CLI tests passed (spec 9.1–9.13).'

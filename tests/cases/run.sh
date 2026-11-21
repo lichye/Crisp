@@ -732,6 +732,13 @@ run 0 veval salt_reset
 has 'proved in reset_top.u_child (veval)'
 run 3 veval no_reset
 has 'local counterexample in reset_top.u_child'
+run 0 veval aliases
+for property in alias_top.p_parent alias_top.u_mid.u_leaf.p_small; do
+    has $'local\t'"$property"$'\talias_top.u_mid.u_leaf\tproved\t' "$(progress_file)"
+done
+run 3 veval aliases_no_reset
+has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 2 unknown'
+[[ $(grep -c 'local counterexample in alias_top.u_mid.u_leaf ' out) == 2 ]]
 run 0 veval unconnected
 has 'proved in unreset_top.u_child (veval); checked without reset: no input of unreset_top.u_child is connected to rst'
 # Without ltl2tgba on PATH, a veval task stops before any check.
