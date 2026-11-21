@@ -396,6 +396,26 @@ for unmatched in 'nomatch 34 top.absent*' 'dot 35 top?p_one' 'literal_miss 39 to
     has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
 done
 
+while read -r task expected; do
+    run 0 trailing-properties "$task"
+    actual=$(awk -F '\t' '$1 == "final" && $4 == "passed" {print $2}' "$(progress_file)" | LC_ALL=C sort | paste -sd ' ')
+    [[ $actual == "$expected" ]]
+done <<'MATCHES'
+empty top.p_one
+prefix top.p_one top.p_still top.p_two
+recursive top.u_leaf.q_leaf
+brackets top.g[1].p_gen
+middle top.u_leaf.q_leaf
+MATCHES
+for unmatched in 'dot top.u_*' 'case Top.*'; do
+    read -r task pattern <<< "$unmatched"
+    run 2 trailing-properties "$task"
+    salt="$root/tests/cases/trailing-properties.salt"
+    line=$(grep -nF "$task: properties $pattern" "$salt" | cut -d: -f1)
+    has "$salt:$line: [options] properties: pattern '$pattern' matches no assertion" err
+    [[ $(wc -l < err) == 1 ]]
+done
+
 # The patterns for all tasks and for one task merge in file order.
 printf '[tasks]\nwith\nwithout\n[files]\n%s\n[design]\ntop top\n[options]\nmode bmc\nwith: properties top.p_two\nproperties top.p_one\n' \
     "$root/tests/cases/properties.sv" > merged.salt
