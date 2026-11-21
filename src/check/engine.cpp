@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "vacuity.hpp"
 
 #include <ebmc/bmc.h>
 #include <ebmc/ebmc_error.h>
@@ -147,7 +148,7 @@ bool refuted(const Property& p) {
 class Verilog : public verilog_ebmc_languaget {
 public:
     using verilog_ebmc_languaget::verilog_ebmc_languaget;
-    void apply_reset(const front::Task& task, transition_systemt& system) {
+    irep_idt apply_reset(const front::Task& task, transition_systemt& system) {
         const auto& reset = *task.reset;
         const auto& name = reset.value.signal;
         const auto prefix = id2string(system.main_symbol->name) + ".";
@@ -190,6 +191,7 @@ public:
 
         // Use EBMC's --reset implementation after validating the elaborated port.
         create_reset_logic(reset_expression(reset.value, top), system);
+        return prefix + top + "." + name;
     }
 };
 
@@ -237,7 +239,7 @@ void write_wave(const trans_tracet& trace, const fs::path& file, messaget& messa
     wave.close();
 }
 
-void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, EngineRun operation,
+void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, EngineRun operation, Deadline deadline,
            const std::set<std::string>& skip) {
     auto cmd = command_line(task);
     register_language(new_verilog_language);
@@ -252,7 +254,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
         if (!undriven.empty() && task.undriven.value == Undriven::error) throw UndrivenError{};
     });
     if (!system) throw std::runtime_error("EBMC produced no transition system");
-    if (task.reset) language.apply_reset(task, *system);
+    const irep_idt reset = task.reset ? language.apply_reset(task, *system) : irep_idt{};
     if (operation == EngineRun::validate_reset) return;
     auto properties = ebmc_propertiest::from_command_line(cmd, *system, messages);
     properties.properties.remove_if([](const auto& p) { return p.is_exists_path(); });
@@ -269,43 +271,39 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
     }
     if (ids.empty()) return;
 
-    auto check_batch = [&](ebmc_propertiest& batch) {
-        auto checked = property_checker(cmd, *system, batch, messages);
-        if (checked.status != property_checker_resultt::statust::VERIFICATION_RESULT)
-            throw std::runtime_error("EBMC did not return verification results");
-        const namespacet ns(system->symbol_table);
-        messaget message(messages);
-        for (auto& p : checked.properties) {
-            if (p.is_assumption()) {
-                if (p.is_unsupported() || p.is_failure())
-                    throw std::runtime_error(id2string(p.name) + ": " + p.status_as_string());
-                continue;
-            }
-            if (p.is_disabled()) continue;
-            const auto index = ids.at(p.identifier);
-            std::string verdict, reason;
-            if (p.is_failure() || p.is_unsupported()) {
-                verdict = "error";
-                reason = p.location.as_string() + ": " + p.status_as_string();
-            } else if (refuted(p)) {
-                if (!p.witness_trace) p.witness_trace = reconstruct(cmd, *system, p, messages);
-                write_wave(*p.witness_trace, scratch / (std::to_string(index) + ".vcd"), message, ns);
-                verdict = "refuted";
-            } else if (task.mode.value == Mode::bmc && (p.is_proved_with_bound() || p.is_proved())) {
-                verdict = "passed";
-                reason = "bmc depth " + std::to_string(task.depth->value);
-            } else if (p.is_proved()) {
-                verdict = "proved";
-            } else {
-                verdict = "unknown";
-                if (p.is_proved_with_bound())
-                    reason = "no counterexample through depth " + std::to_string(p.bound);
-                else if (task.mode.value == Mode::kind && p.is_inconclusive())
-                    reason = "k-induction inconclusive at depth " + std::to_string(task.depth->value);
-                else reason = "EBMC: " + p.status_as_string();
-            }
-            reporter.send(index, verdict.c_str(), reason);
+    const namespacet ns(system->symbol_table);
+    messaget message(messages);
+    auto report = [&](Property& p) {
+        if (p.is_assumption()) {
+            if (!p.is_assumed()) throw std::runtime_error(id2string(p.name) + ": " + p.status_as_string());
+            return;
         }
+        if (p.is_disabled()) return;
+        const auto index = ids.at(p.identifier);
+        if (p.is_failure() || p.is_unsupported()) {
+            reporter.send(index, "error", p.location.as_string() + ": " + p.status_as_string());
+        } else if (refuted(p)) {
+            if (!p.witness_trace) p.witness_trace = reconstruct(cmd, *system, p, messages);
+            write_wave(*p.witness_trace, scratch / (std::to_string(index) + ".vcd"), message, ns);
+            reporter.send(index, "refuted");
+        } else if (task.mode.value == Mode::bmc && (p.is_proved_with_bound() || p.is_proved())) {
+            reporter.send(index, "passed", "bmc depth " + std::to_string(task.depth->value));
+        } else if (p.is_proved()) {
+            reporter.send(index, "proved");
+        } else {
+            std::string reason;
+            if (p.is_proved_with_bound()) reason = "no counterexample through depth " + std::to_string(p.bound);
+            else if (task.mode.value == Mode::kind && p.is_inconclusive())
+                reason = "k-induction inconclusive at depth " + std::to_string(task.depth->value);
+            else reason = "EBMC: " + p.status_as_string();
+            reporter.send(index, "unknown", reason);
+        }
+    };
+    auto check_batch = [&](ebmc_propertiest& batch) {
+        check_antecedents(cmd, *system, batch, task, reset, deadline, messages, report,
+                          [&](const irep_idt& id, const char* status, const std::string& detail) {
+                              reporter.send(ids.at(id), status, detail);
+                          });
     };
     if (task.mode.value != Mode::pdr || ids.size() == 1) {
         check_batch(properties);
@@ -325,10 +323,10 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
 } // namespace
 
 bool run_engine(const front::Task& task, const std::filesystem::path& scratch, Reporter reporter,
-                EngineRun operation, const std::set<std::string>& skip) {
+                EngineRun operation, Deadline deadline, const std::set<std::string>& skip) {
     try {
         if (operation == EngineRun::lower) lower_for_veval(task, scratch, reporter);
-        else solve(task, scratch, reporter, operation, skip);
+        else solve(task, scratch, reporter, operation, deadline, skip);
         return true;
     } catch (const UndrivenError&) {
         return false;

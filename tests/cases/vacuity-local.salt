@@ -1,0 +1,15 @@
+[tasks]
+local
+also_top
+
+[files]
+vacuity-local.sv
+
+[design]
+top guarded_top
+
+[options]
+mode bmc
+depth 3
+local: veval only
+also_top: veval on
