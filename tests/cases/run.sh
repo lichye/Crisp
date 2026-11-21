@@ -445,6 +445,9 @@ has 'more than one clock (two_clocks.clk_a, two_clocks.clk_b)' err
 run 2 veval unreadable
 has 'crisp: veval could not lower the design' err
 has 'veval-unreadable.sv line 3' err
+# A struct port read field by field: the product keeps the port's type.
+run 0 veval struct
+has 'proved in struct_top.u_child (veval)'
 # Without a veval line the task runs as before.
 run 0 token prove
 if grep -Fq 'not connected' out; then

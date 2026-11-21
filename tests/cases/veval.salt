@@ -10,6 +10,7 @@ missing
 selected
 clocks
 unreadable
+struct
 
 [files]
 assumed: veval-assumed.sv
@@ -23,6 +24,7 @@ missing: veval-missing.sv
 selected: veval-two.sv
 clocks: veval-clocks.sv
 unreadable: veval-unreadable.sv
+struct: veval-struct.sv
 
 [design]
 assumed: top assumed_top
@@ -37,6 +39,7 @@ missing: top missing_top
 selected: top two_top
 clocks: top two_clocks
 unreadable: top unreadable
+struct: top struct_top
 
 [options]
 veval only

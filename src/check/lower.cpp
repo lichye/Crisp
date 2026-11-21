@@ -2,6 +2,10 @@
 // called as a library with the task's settings, writing one product per
 // landing instance into the task's scratch directory. Built in ebmc.mk with the
 // engine's flags.
+//
+// Keep these steps in step with src/components/veval/src/lowering/RunLowering.cpp
+// (runLowering): when veval adds a step there, add it here too. Its logs,
+// reports and saved verdicts are left out on purpose.
 #include "engine.hpp"
 
 #include <frontend/rtl/ElaboratedDesign.h>
@@ -96,12 +100,13 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
     lowering::symbolic::CombinationalDefinitions definitions(system, aliases);
     auto attribution = lowering::attributionInputs(system, edges, aliases, 1);
     auto blackboxes = lowering::blackboxInstances(system, edges, 1);
+    const namespacet ns(system.symbol_table);
+    lowering::prepareLocalPortTypes(edges, ns); // struct and array ports keep their types in products
     lowering::singlePathPlacement = true;
     std::vector<lowering::StoppedAbove> stopped;
     auto transports = lowering::lowerProperties(set, edges, aliases, attribution, blackboxes, &stopped, 1,
                                                 &definitions);
 
-    const namespacet ns(system.symbol_table);
     auto environments = environment::environment(transports, edges, system, ns);
     std::map<std::string, std::string> fingerprints;
     std::map<std::string, std::vector<std::string>> shown;
