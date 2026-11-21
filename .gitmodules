@@ -3,3 +3,7 @@
 	url = https://github.com/lichye/ebmc.git
 	ignore = untracked
 	branch = crisp
+[submodule "src/components/slang"]
+	path = src/components/slang
+	url = https://github.com/MikePopoloski/slang.git
+	ignore = untracked

@@ -82,6 +82,7 @@ void merge(Task& task, const Task& common) {
     inherit(task.smart, common.smart);
     inherit(task.veval, common.veval);
     inherit(task.undriven, common.undriven);
+    inherit(task.rtl_mode, common.rtl_mode);
     inherit(task.depth, common.depth);
     inherit(task.thread, common.thread);
     inherit(task.timeout_seconds, common.timeout_seconds);

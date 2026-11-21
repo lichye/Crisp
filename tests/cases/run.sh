@@ -7,6 +7,12 @@ if ! command -v yices-smt2 >/dev/null; then
     echo 'tests/cases/run.sh: yices-smt2 not found in PATH; install yices or add its directory to PATH' >&2
     exit 1
 fi
+# rtl-mode strict, the default, runs slang before EBMC (spec 23); the tests need it.
+slang=${CRISP_SLANG:-$root/src/components/slang/build/bin/slang}
+if [[ ! -x $slang ]]; then
+    echo "tests/cases/run.sh: slang not found at $slang; run 'make slang' or set CRISP_SLANG" >&2
+    exit 1
+fi
 tmp_base=${TMPDIR:-$root/build}
 mkdir -p -- "$tmp_base"
 work=$(mktemp -d "$tmp_base/crisp-cases.XXXXXXXX")
@@ -342,4 +348,49 @@ timeout 11 env PATH="$work/no-yices" "$root/build/crisp" "$root/tests/cases/leve
 has "crisp: $root/tests/cases/level-word.salt:26: [options] level word: yices-smt2 not found in PATH; install yices or add its directory to PATH" err
 [[ $(wc -l < err) == 1 ]]
 has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
-echo 'EBMC cases passed (Specs 3, 8, 11, 18, 19, and 20).'
+# Spec 23: rtl-mode strict runs slang first; its errors stop the task, relaxed skips it.
+rtl="$root/tests/cases/rtl-mode.salt"
+rejected_rtl() {
+    local task=$1 line=$2 diagnostic=$3
+    run 2 rtl-mode "$task"
+    [[ $(head -n 1 err) == "crisp: $rtl:$line: strict RTL check failed (slang); write rtl-mode relaxed to skip it" ]]
+    has "$diagnostic" err
+    if grep -Eq '  (proved|passed|refuted|unknown)  ' out; then
+        cat out err >&2
+        echo "rtl-mode $task: the strict check did not stop the task" >&2
+        exit 1
+    fi
+    has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
+}
+rejected_rtl before 2 "rtl-before.sv:3:30: error: identifier 'q' used before its declaration"
+rejected_rtl enum 4 'rtl-enum.sv:3:39: error: expression width of 4 does not exactly match declared enum type width of 3'
+rejected_rtl initial 27 "rtl-initial.sv:8:30: error: variable 'mem' driven by always_ff procedure cannot be written to"
+for case in 'before use_before_declaration.p_follows' 'enum enum_width.p_known' 'initial initial_and_always_ff.p_written'; do
+    read -r task name <<< "$case"
+    run 0 rtl-mode "${task}_relaxed"
+    has 'rtl-mode relaxed'
+    has "$name  passed"
+done
+# slang 11.0 reports $fatal("...") only as a warning; warnings are not printed.
+run 0 rtl-mode fatal
+has 'rtl-mode strict'
+has 'fatal_string.p_true  passed'
+[[ ! -s err ]]
+run 0 rtl-mode legal
+has 'legal.p_follows  passed'
+has 'legal.p_known  passed'
+[[ ! -s err ]]
+# A strict and a relaxed task in one run.
+run 2 rtl-mode before before_relaxed
+has "crisp: $rtl:2: strict RTL check failed (slang)" err
+has 'use_before_declaration.p_follows  passed'
+has '2 tasks, 0 proved, 1 passed, 0 refuted, 0 unknown'
+# Without slang, strict tasks stop and relaxed tasks run.
+status=0
+CRISP_SLANG="$work/no-slang" timeout 11 "$root/build/crisp" "$rtl" legal before_relaxed >out 2>err || status=$?
+[[ $status == 2 ]]
+has "crisp: $rtl:9: rtl-mode strict: slang not found at $work/no-slang. Run 'make slang' or set CRISP_SLANG" err
+[[ $(wc -l < err) == 1 ]]
+has 'use_before_declaration.p_follows  passed'
+has '2 tasks, 0 proved, 1 passed, 0 refuted, 0 unknown'
+echo 'EBMC cases passed (Specs 3, 8, 11, 18, 19, 20, and 23).'

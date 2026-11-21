@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <regex>
 #include <sstream>
 #include <string_view>
 #include <system_error>
@@ -256,6 +257,98 @@ fs::path smart_executable() {
     return bin.parent_path() / "src/components/smartVerilog/build/smart";
 }
 
+fs::path slang_executable() {
+    if (const char* path = std::getenv("CRISP_SLANG"))
+        return fs::absolute(path);
+
+    const auto bin = veval::util::currentExecutable().parent_path();
+    const auto sibling = bin / "slang";
+    if (fs::is_regular_file(sibling)) return sibling;
+    return bin.parent_path() / "src/components/slang/build/bin/slang";
+}
+
+// "<.salt>:<line>:" of the rtl-mode line, or of the task when the key is not written.
+std::string rtl_mode_location(const front::Task& task) {
+    const auto& source = task.rtl_mode.source ? task.rtl_mode.source : task.name ? task.name->source : std::nullopt;
+    if (source) return source->file.string() + ":" + std::to_string(source->line) + ":";
+    return task.salt_file.string() + ":";
+}
+
+// slang's error diagnostics: each starts with "<file>:<line>:<col>: error: " or
+// "error: " and continues with the source excerpt; notes after an error belong to it.
+std::string slang_errors(const std::string& log) {
+    static const std::regex header(R"(^(?:\S.*:\d+:\d+: )?(error|fatal error|warning|note): .*)");
+    std::istringstream lines(log);
+    std::string kept, line;
+    bool keep = false;
+    for (std::smatch match; std::getline(lines, line);) {
+        if (std::regex_match(line, match, header)) {
+            const auto severity = match[1].str();
+            keep = severity == "error" || severity == "fatal error" || (keep && severity == "note");
+        }
+        if (keep) kept += line + '\n';
+    }
+    return kept.empty() ? log : kept;
+}
+
+// rtl-mode strict (spec 23): slang parses and fully elaborates exactly the input
+// that EBMC gets, within the task's timeout and memory limit. Returns false after
+// printing slang's errors.
+bool check_rtl(const front::Task& task, const fs::path& scratch, Clock::time_point deadline) {
+    const auto executable = slang_executable();
+    if (::access(executable.c_str(), X_OK) != 0 || !fs::is_regular_file(executable))
+        throw std::runtime_error(rtl_mode_location(task) + " rtl-mode strict: slang not found at " + executable.string() +
+                                 ". Run 'make slang' or set CRISP_SLANG, or write rtl-mode relaxed to skip the check");
+
+    std::vector<std::string> args{executable.string(), "--quiet", "--single-unit"};
+    for (const auto& dir : task.includes) args.insert(args.end(), {"-I", dir.value.string()});
+    for (const auto& define : task.defines)
+        args.insert(args.end(), {"-D", define.value.name + (define.value.value ? "=" + *define.value.value : "")});
+    if (task.top) args.insert(args.end(), {"--top", task.top->value});
+    for (const auto& file : task.files) args.push_back(fs::absolute(file.value).string());
+
+    std::vector<char*> argv;
+    for (auto& arg : args) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+    const auto log_path = scratch / "slang.log";
+    std::cout.flush();
+    std::cerr.flush();
+
+    const auto pid = veval::util::forkProofContext();
+    if (pid < 0) throw os_error("start slang");
+    if (pid == 0) {
+#ifndef __APPLE__
+        if (::setpgid(0, 0) < 0) ::_exit(126);
+#endif
+        try {
+            if (task.ram_mib) set_memory_limit(task.ram_mib->value);
+            if (!std::freopen(log_path.c_str(), "w", stdout) || ::dup2(STDOUT_FILENO, STDERR_FILENO) < 0)
+                ::_exit(126);
+            // slang prints source paths relative to its working directory: use the .salt's.
+            if (::chdir(task.salt_file.parent_path().c_str()) < 0) std::perror("enter the .salt directory");
+            ::execv(executable.c_str(), argv.data());
+            std::perror("exec slang");
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "%s\n", e.what());
+        }
+        ::_exit(126);
+    }
+
+    const auto wait = veval::util::waitForProofContext(pid, deadline, std::chrono::milliseconds(5));
+    if (!wait.error.empty()) throw std::runtime_error(wait.error);
+    if (wait.timedOut) throw std::runtime_error("the strict RTL check (slang) exceeded the task timeout");
+    if (WIFEXITED(wait.status) && WEXITSTATUS(wait.status) == 0) return true;
+
+    std::ifstream in(log_path);
+    std::ostringstream log;
+    log << in.rdbuf();
+    std::cerr << "crisp: " << rtl_mode_location(task)
+              << " strict RTL check failed (slang); write rtl-mode relaxed to skip it\n";
+    if (WIFSIGNALED(wait.status)) std::cerr << "crisp: slang terminated by signal " << WTERMSIG(wait.status) << '\n';
+    std::cerr << slang_errors(log.str());
+    return false;
+}
+
 void mine(const front::Task& task, const fs::path& scratch, Clock::time_point deadline) {
     const auto executable = smart_executable();
     if (::access(executable.c_str(), X_OK) != 0)
@@ -329,6 +422,11 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     Scratch scratch;
     std::string error, events;
     if (!veval::util::ensureWaitableChildren(error)) throw std::runtime_error(error);
+    // Before SMART and EBMC: illegal RTL stops the task unless rtl-mode relaxed (spec 23).
+    if (task.rtl_mode.value == front::RtlMode::strict && !check_rtl(task, scratch.path, deadline)) {
+        summary.error = true;
+        return;
+    }
     const auto wait = [&] {
         if (task.smart.source && task.smart.value == front::ToolUse::on) {
             // SMART also consumes reset and runs checks. Validate before starting it.

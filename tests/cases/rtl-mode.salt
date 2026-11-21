@@ -1,0 +1,30 @@
+[tasks]
+before
+before_relaxed
+enum
+enum_relaxed
+initial
+initial_relaxed
+fatal
+legal
+
+[files]
+before: rtl-before.sv
+before_relaxed: rtl-before.sv
+enum: rtl-enum.sv
+enum_relaxed: rtl-enum.sv
+initial: rtl-initial.sv
+initial_relaxed: rtl-initial.sv
+fatal: rtl-fatal.sv
+legal: rtl-legal.sv
+
+[design]
+legal: top legal
+
+[options]
+mode bmc
+depth 3
+initial: rtl-mode strict
+before_relaxed: rtl-mode relaxed
+enum_relaxed: rtl-mode relaxed
+initial_relaxed: rtl-mode relaxed
