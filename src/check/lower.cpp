@@ -74,8 +74,11 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
     // connected straight to the parent's signal.
     std::map<std::string, std::string> same;
     const auto find = [&](std::string name) {
-        while (same.count(name) && same[name] != name) name = same[name];
-        return name;
+        for (;;) {
+            const auto it = same.find(name);
+            if (it == same.end() || it->second == name) return name;
+            name = it->second;
+        }
     };
     const auto strip = [](std::string name) { // Verilog::$root.top.clk -> top.clk
         for (const std::string prefix : {"Verilog::", "$root."})

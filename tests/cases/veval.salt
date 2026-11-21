@@ -19,6 +19,8 @@ clamp
 salt_reset
 no_reset
 unconnected
+aliases
+aliases_no_reset
 
 [files]
 assumed: veval-assumed.sv
@@ -41,6 +43,8 @@ clamp: veval-clamp.sv
 salt_reset: veval-reset.sv
 no_reset: veval-reset.sv
 unconnected: veval-unreset.sv
+aliases: veval-reset.sv
+aliases_no_reset: veval-reset.sv
 
 [design]
 assumed: top assumed_top
@@ -69,6 +73,9 @@ no_reset: top reset_top
 no_reset: define NO_CONTRACT
 unconnected: top unreset_top
 unconnected: reset rst high
+aliases: top alias_top
+aliases_no_reset: top alias_top
+aliases: reset board_rst high
 
 [options]
 veval only
