@@ -96,6 +96,6 @@ int main(int argc, char** argv) {
     }
     std::cout << tasks.size() << (tasks.size() == 1 ? " task, " : " tasks, ")
               << summary.proved << " proved, " << summary.passed << " passed, "
-              << summary.refuted << " refuted, " << summary.unknown << " unknown\n";
+              << summary.refuted << " refuted, " << summary.vacuous << " vacuous, " << summary.unknown << " unknown\n";
     return summary.exit_code();
 }

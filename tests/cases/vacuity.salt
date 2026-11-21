@@ -1,0 +1,59 @@
+[tasks]
+bounded
+word
+bit
+induction
+pdr
+bdd
+auto
+late3
+late8
+late_pdr
+pdr30
+refute
+sequence
+
+[files]
+vacuity.sv
+
+[design]
+top vacuity
+pdr30: top sampled
+reset rst high
+
+[options]
+mode bmc
+bounded: depth 3
+word: depth 3
+word: level word
+bit: depth 3
+bit: level bit
+induction: mode kind
+induction: depth 3
+pdr: mode pdr
+bdd: mode bdd
+auto: mode auto
+late3: depth 3
+late8: depth 8
+pdr30: mode pdr
+pdr30: properties sampled.after30
+late_pdr: mode pdr
+refute: depth 3
+sequence: depth 3
+bounded: properties vacuity.basic_*
+word: properties vacuity.basic_*
+bit: properties vacuity.basic_*
+induction: properties vacuity.basic_*
+pdr: properties vacuity.basic_*
+bdd: properties vacuity.basic_*
+auto: properties vacuity.basic_*
+bounded: properties vacuity.next_*
+bounded: properties vacuity.chained
+word: properties vacuity.next_*
+word: properties vacuity.chained
+late3: properties vacuity.late
+late8: properties vacuity.late
+late_pdr: properties vacuity.late
+refute: properties vacuity.wrong
+sequence: properties vacuity.double_reset
+sequence: properties vacuity.last_sample
