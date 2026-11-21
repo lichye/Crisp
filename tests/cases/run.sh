@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 ulimit -c 0
 root=$(cd -- "$(dirname -- "$0")/../.." && pwd -P)
 # level word runs EBMC with yices (spec 19); the tests need it.
@@ -25,6 +25,19 @@ trap 'rm -r -- "$work"' EXIT
 mkdir -p "$work/tmp"
 export TMPDIR="$work/tmp"
 cd -- "$work"
+
+report_failure() {
+    local status=$1 line=$2 task=
+    # Let the parent report a failed assignment or pipeline once.
+    if (( BASH_SUBSHELL != 0 )); then return 0; fi
+    if [[ -r out ]]; then
+        task=$(sed -n 's|^  progress  crisp-out/\([^/]*\)/progress-[^/]*\.tsv$|\1|p' out) || task=
+        if [[ $task == *$'\n'* ]]; then task=; fi
+    fi
+    printf '%s:%s: check failed (exit %s)%s\n' \
+        "$root/tests/cases/run.sh" "$line" "$status" "${task:+ after task $task}" >&2 || :
+}
+trap 'report_failure "$?" "$LINENO"' ERR
 
 run() {
     local expected=$1 design=$2 status=0
