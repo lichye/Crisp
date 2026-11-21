@@ -765,15 +765,16 @@ void print_line(const Property& p, Summary& summary, Clock::time_point start) {
 }
 } // namespace
 
-void run_sampling(Deadline deadline, const std::function<void(const Witness&)>& search, const Witness& observed) {
+void run_shallow_bmc(Deadline deadline,
+                        const std::function<void(const Witness&)>& search, const Witness& observed) {
     if (Clock::now() >= deadline) return;
     Pipe pipe;
-    if (::fcntl(pipe.fd[0], F_SETFL, O_NONBLOCK) < 0) throw os_error("configure sampling pipe");
+    if (::fcntl(pipe.fd[0], F_SETFL, O_NONBLOCK) < 0) throw os_error("configure witness pipe");
 #ifdef __linux__
     const auto parent = ::getpid();
 #endif
     const auto pid = ::fork();
-    if (pid < 0) throw os_error("start random traces");
+    if (pid < 0) throw os_error("start witness search");
     if (pid == 0) {
         pipe.close_end(0);
         if (::setpgid(0, 0) < 0) ::_exit(2);
@@ -792,9 +793,9 @@ void run_sampling(Deadline deadline, const std::function<void(const Witness&)>& 
             });
             ::_exit(0);
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "random traces: %s\n", e.what());
+            std::fprintf(stderr, "shallow BMC: %s\n", e.what());
         } catch (...) {
-            std::fputs("random traces: engine failure\n", stderr);
+            std::fprintf(stderr, "shallow BMC: engine failure\n");
         }
         std::fflush(stderr);
         ::_exit(1);
@@ -808,17 +809,17 @@ void run_sampling(Deadline deadline, const std::function<void(const Witness&)>& 
             const auto count = ::read(pipe.fd[0], &index, sizeof(index));
             if (count == sizeof(index)) observed(index);
             else if (count == 0 || (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) return;
-            else if (count >= 0 || errno != EINTR) throw std::runtime_error("invalid random trace result");
+            else if (count >= 0 || errno != EINTR) throw std::runtime_error("invalid witness result");
         }
     };
     const auto wait = veval::util::waitForProcessGroup(pid, deadline, std::chrono::milliseconds(1), drain);
     drain();
     if (!wait.error.empty()) throw std::runtime_error(wait.error);
     if (wait.timedOut) {
-        std::fputs("random traces: opportunity budget expired\n", stderr);
+        std::fprintf(stderr, "shallow BMC: timed out\n");
         std::fflush(stderr);
     } else if (WIFSIGNALED(wait.status)) {
-        std::fprintf(stderr, "random traces: terminated by signal %d\n", WTERMSIG(wait.status));
+        std::fprintf(stderr, "shallow BMC: terminated by signal %d\n", WTERMSIG(wait.status));
         std::fflush(stderr);
     }
 }

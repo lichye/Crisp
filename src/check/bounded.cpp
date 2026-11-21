@@ -4,8 +4,9 @@
 #include <stdexcept>
 
 #include <ebmc/netlist.h>
+#include <ebmc/property_checker.h>
+#include <ebmc/ebmc_solver_factory.h>
 #include <solvers/sat/satcheck.h>
-#include <trans-netlist/trans_trace_netlist.h>
 #include <trans-netlist/unwind_netlist.h>
 #include <trans-word-level/lasso.h>
 #include <trans-word-level/trans_trace_word_level.h>
@@ -114,37 +115,16 @@ void bit_checks(const cmdlinet& cmd, transition_systemt& system, ebmc_properties
     auto item = encoded.properties.begin();
     auto encode = [&](Property& p) {
         p.normalized_expr = (item++)->normalized_expr;
-        if (p.is_disabled() || p.is_failure()) return;
-        const auto found = netlist.properties.find(p.identifier);
-        if (!netlist_bmc_supports_property(p.normalized_expr) ||
-            found == netlist.properties.end() || !found->second) {
-            p.failure("property not supported by netlist BMC engine");
-            return;
-        }
-        p.timeframe_literals = unwind_property(*found->second, frames);
-        for (const auto lit : p.timeframe_literals) {
-            if (p.is_assumption()) solver.l_set_to(lit, true);
-            else solver.set_frozen(lit);
-        }
+        compile_bounded_netlist_property(cmd, p, netlist, frames, bound, ns, solver, messages);
     };
     for (auto& p : assertions.properties) encode(p);
     for (auto& entry : probes) encode(entry.second);
 
-    auto solve = [&](Property& p, bool write_trace) {
-        if (p.is_failure()) return;
-        switch (solver.prop_solve({!solver.land(p.timeframe_literals)})) {
-        case propt::resultt::P_SATISFIABLE:
-            p.refuted();
-            if (write_trace) p.witness_trace = compute_trans_trace(p.timeframe_literals, frames, solver, ns);
-            break;
-        case propt::resultt::P_UNSATISFIABLE: p.proved_with_bound(bound); break;
-        case propt::resultt::P_ERROR: p.failure("netlist BMC solver error");
-        }
-    };
-    for (auto p : active(assertions)) solve(*p, true);
+    for (auto& p : assertions.properties)
+        solve_bounded_netlist_property(cmd, p, frames, bound, ns, solver, messages);
     for (const auto& id : after(assertions)) {
         auto& probe = probes.at(id);
-        solve(probe, false);
+        solve_bounded_netlist_property(cmd, probe, frames, bound, ns, solver, messages, false);
         resolved(probe);
     }
 }

@@ -1,0 +1,33 @@
+[tasks]
+kind
+pdr
+open_kind
+open_pdr
+bounded
+
+[files]
+vacuity-tail1.sv
+
+[design]
+top tail
+clock clk
+open_kind: define ALLOW_ALARM
+open_pdr: define ALLOW_ALARM
+
+[options]
+properties tail.match_trip
+mode pdr
+kind: mode kind
+kind: depth 10
+kind: level word
+open_kind: mode kind
+open_kind: depth 10
+open_kind: level word
+bounded: mode bmc
+bounded: depth 10
+bounded: level word
+
+[resource]
+timeout 8
+ram 2G
+thread 1
