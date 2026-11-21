@@ -7,7 +7,39 @@ $(CRISP_ADAPTER): $(CRISP_ROOT)/src/check/engine.cpp $(CRISP_ROOT)/src/check/ebm
 
 -include $(CRISP_ADAPTER:.o=.d)
 
-$(CRISP_ROOT)/build/crisp: $(CRISP_OBJECTS) $(CRISP_ADAPTER) $(filter-out main.o,$(OBJ))
+# veval's lowering (spec 25), compiled with the engine's flags and linked
+# against the engine's hw-cbmc libraries. veval's own CMake target
+# hw_cbmc_frontend recompiles those hw-cbmc sources, so it is not used; of
+# its three veval files, two are taken. The third, RunFrontendCommand.cpp,
+# replaces CBMC's run(), which the engine uses to start solvers such as yices
+# and Spot; Crisp keeps CBMC's run() for both the engine and veval. veval's code is not -Werror clean under the
+# engine's warning flags, so warnings stay warnings here.
+CRISP_VEVAL := $(CRISP_ROOT)/src/components/veval/src
+CRISP_VEVAL_SOURCES := \
+	frontend/rtl/ElaboratedDesign.cpp util/verilog/ExpressionPrinter.cpp \
+	frontend/input/ReplaceDontCareConstants.cpp \
+	frontend/sva/PropertyMonitor.cpp frontend/sva/LocalVariableMonitor.cpp \
+	frontend/sva/ClockSampling.cpp frontend/sva/SafetyMonitor.cpp \
+	lowering/Symbolic/BitRewriting.cpp lowering/Symbolic/PropertySubstitution.cpp \
+	lowering/Symbolic/CombinationalDefinitions.cpp lowering/Symbolic/SignalAliases.cpp \
+	lowering/connectivity/ConnectionMap.cpp lowering/environment/AssumptionDependencies.cpp \
+	lowering/environment/CopyPortAssumptions.cpp lowering/output/WriteLocalSpecs.cpp \
+	lowering/propagation/LandingEligibility.cpp lowering/propagation/PropertyLowering.cpp \
+	lowering/connectivity/SignalReachability.cpp lowering/reports/ReachabilityReport.cpp \
+	lowering/reports/ExportHierarchyGraph.cpp \
+	util/database/Json.cpp \
+	lowering/environment/LocalEnvironment.cpp util/database/SavedVerdicts.cpp \
+	lowering/reports/VerdictReport.cpp \
+	check/prepare/ReadLocalSpec.cpp \
+	frontend/rtl/HwCbmcVerilogSynthesis.cpp util/verilog/ProductExpression.cpp
+CRISP_VEVAL_OBJECTS := $(patsubst %.cpp,$(CRISP_ROOT)/build/veval/%.o,$(CRISP_VEVAL_SOURCES))
+$(CRISP_ROOT)/build/veval/%.o: $(CRISP_VEVAL)/%.cpp $(CRISP_ROOT)/src/check/ebmc.mk
+	@mkdir -p "$(@D)"
+	$(CXX) $(filter-out -Werror,$(CP_CXXFLAGS)) -I"$(CRISP_VEVAL)" -c $< -o $@
+
+-include $(CRISP_VEVAL_OBJECTS:.o=.d)
+
+$(CRISP_ROOT)/build/crisp: $(CRISP_OBJECTS) $(CRISP_ADAPTER) $(CRISP_VEVAL_OBJECTS) $(filter-out main.o,$(OBJ))
 	@set -e; staging=$$(mktemp -d "$(@D)/.link.XXXXXX"); \
 	trap 'rm -rf -- "$$staging"' EXIT; \
 	$(subst $@,"$$staging/crisp",$(LINKBIN)); mv -- "$$staging/crisp" "$@"
