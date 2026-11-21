@@ -208,4 +208,60 @@ has 'crisp: warning: undriven undriven_temporal.en at ' err
 run 0 undriven-clean
 has '3 tasks, 3 proved, 0 passed, 0 refuted, 0 unknown'
 [[ ! -s err ]]
-echo 'EBMC cases passed (Specs 3, 8, 11, and 18).'
+
+# Spec 20: properties PATTERN selects the assertions that are checked.
+reported() {
+    local status=$1 task=$2 verdict=$3
+    shift 3
+    run "$status" properties "$task"
+    for name in "$@"; do has "  $name  $verdict"; done
+    if [[ $(grep -c '^  top\.' out) != $# ]]; then
+        cat out err >&2
+        echo "properties $task: expected exactly $# reported assertions" >&2
+        exit 1
+    fi
+}
+selected() {
+    local task=$1
+    shift
+    reported 0 "$task" passed "$@"
+    has "1 task, 0 proved, $# passed, 0 refuted, 0 unknown"
+}
+selected one top.p_one
+has '  properties  top.p_one'
+selected union top.p_one top.p_two
+has '  properties  top.p_one  top.p_two'
+selected top_only top.p_one top.p_two top.p_still
+selected deep top.u_leaf.q_leaf top.p_one top.p_two top.p_still 'top.g[0].p_gen' 'top.g[1].p_gen'
+selected sub top.u_leaf.q_leaf
+selected generate 'top.g[0].p_gen'
+selected single top.p_one
+# p_still holds only under the assumption, which stays in effect.
+selected assumed top.p_still
+sed '/en_low: assume/d' "$root/tests/cases/properties.sv" > unassumed.sv
+printf '[files]\n%s\n[design]\ntop top\n[options]\nmode bmc\nproperties top.p_still\n' "$work/unassumed.sv" > unassumed.salt
+status=0
+timeout 11 "$root/build/crisp" unassumed.salt >out 2>err || status=$?
+[[ $status == 1 ]]
+has 'top.p_still  refuted'
+reported 0 pdr proved top.p_one top.p_two top.p_still
+has '1 task, 3 proved, 0 passed, 0 refuted, 0 unknown'
+
+properties="$root/tests/cases/properties.salt"
+for unmatched in 'nomatch 32 top.absent*' 'dot 33 top?p_one'; do
+    read -r task line pattern <<< "$unmatched"
+    reported 2 "$task" -
+    has "$properties:$line: [options] properties: pattern '$pattern' matches no assertion" err
+    [[ $(wc -l < err) == 1 ]]
+    has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
+done
+
+# The patterns for all tasks and for one task merge in file order.
+printf '[tasks]\nwith\nwithout\n[files]\n%s\n[design]\ntop top\n[options]\nmode bmc\nwith: properties top.p_two\nproperties top.p_one\n' \
+    "$root/tests/cases/properties.sv" > merged.salt
+status=0
+timeout 11 "$root/build/crisp" merged.salt >out 2>err || status=$?
+[[ $status == 0 ]]
+has '  properties  top.p_two  top.p_one'
+has '2 tasks, 0 proved, 3 passed, 0 refuted, 0 unknown'
+echo 'EBMC cases passed (Specs 3, 8, 11, 18, and 20).'

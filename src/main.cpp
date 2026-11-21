@@ -35,6 +35,10 @@ void print_task(const Task& task) {
               << ", smart " << spelling(task.smart.value) << ", veval " << spelling(task.veval.value)
               << ", undriven " << spelling(task.undriven.value);
     if (task.depth) std::cout << ", depth " << task.depth->value;
+    if (!task.properties.empty()) {
+        std::cout << "\n  properties";
+        for (const auto& pattern : task.properties) std::cout << "  " << pattern.value;
+    }
     std::cout << "\n  resource thread " << task.thread.value << ", ram ";
     if (task.ram_mib) std::cout << task.ram_mib->value << " MiB";
     else std::cout << "unlimited";

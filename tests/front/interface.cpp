@@ -136,6 +136,24 @@ void positive_cases(const fs::path& dir, std::uint64_t cpus) {
     check_undriven("task1: undriven error\nundriven const\n", 5, 6);
     check_undriven("task1:\nundriven error\n--\nundriven const\n", 6, 8);
 
+    // properties PATTERN: the entries for all tasks and for one task merge in file order (5.1.3).
+    const auto check_properties = [&](const std::string& settings, const std::vector<std::string>& first,
+                                      const std::vector<std::size_t>& first_lines, std::size_t common_line) {
+        write(input, tasks + "[options]\n" + settings + files);
+        const auto pair = ready(input);
+        require(pair.size() == 2 && pair[0].properties.size() == first.size() &&
+                pair[1].properties.size() == 1 && pair[1].properties[0].value == "top.*", "properties merge");
+        for (std::size_t i = 0; i < first.size(); ++i) {
+            require(pair[0].properties[i].value == first[i], "properties merge order");
+            origin(pair[0].properties[i], salt, first_lines[i]);
+        }
+        origin(pair[1].properties[0], salt, common_line);
+    };
+    check_properties("properties top.*\ntask1: properties top.u_dut.**\n", {"top.*", "top.u_dut.**"}, {5, 6}, 5);
+    check_properties("task1: properties top.u_dut.**\nproperties top.*\n", {"top.u_dut.**", "top.*"}, {5, 6}, 6);
+    write(input, files);
+    require(ready(input).at(0).properties.empty(), "no properties selects all assertions");
+
     write(input, files);
     const auto unnamed = ready(input);
     require(unnamed.size() == 1 && !unnamed[0].name, "9.7 unnamed task");
@@ -180,7 +198,15 @@ const InvalidCase invalid[] = {
     {"18-undriven", "[options]\nundriven unknown\n", 2, "expected seq, const, error"},
     {"19-undriven-duplicate", "[options]\nundriven seq\nundriven const\n", 3, "duplicate setting"},
     {"20-undriven-missing", "[options]\nundriven\n", 2, "expected one value"},
-    {"21-undriven-extra", "[options]\nundriven seq const\n", 2, "expected one value"}
+    {"21-undriven-extra", "[options]\nundriven seq const\n", 2, "expected one value"},
+    {"22-properties-missing", "[options]\nproperties\n", 2, "properties: expected one PATTERN"},
+    {"23-properties-extra", "[options]\nproperties top.* top.**\n", 2, "properties: expected one PATTERN"},
+    {"24-properties-duplicate", "[tasks]\ntask1\n[files]\nrtl/fifo.sv\n[options]\nproperties top.*\ntask1: properties top.*\n",
+     7, "duplicate pattern 'top.*'"},
+    {"25-properties-smart-only", "[files]\nrtl/fifo.sv\n[options]\nproperties top.*\nsmart only\n", 5,
+     "smart only requires properties to be omitted"},
+    {"26-properties-veval-only", "[files]\nrtl/fifo.sv\n[options]\nveval only\nproperties top.*\n", 5,
+     "veval only requires properties to be omitted"}
 };
 
 } // namespace
