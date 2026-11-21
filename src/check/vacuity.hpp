@@ -13,7 +13,7 @@ namespace crisp::check {
 
 // Keep the implication printable as SVA when veval transports an assertion.
 std::optional<exprt> local_implication(exprt original);
-using ReportOriginal = std::function<void(ebmc_propertiest::propertyt&)>;
+using ReportOriginal = std::function<void(const transition_systemt&, const ebmc_propertiest&, ebmc_propertiest::propertyt&)>;
 using ReportVacuity = std::function<void(const irep_idt&, const char*, const std::string&)>;
 void check_antecedents(const cmdlinet&, transition_systemt&, ebmc_propertiest&, const front::Task&,
                        const irep_idt& reset, Deadline, message_handlert&, const ReportOriginal&, const ReportVacuity&);

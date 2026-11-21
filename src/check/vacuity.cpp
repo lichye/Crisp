@@ -3,6 +3,7 @@
 #include <cstdio>
 
 #include <ebmc/ebmc_error.h>
+#include <ebmc/instrument_buechi.h>
 #include <ebmc/property_checker.h>
 #include <ebmc/random_traces.h>
 #include <solvers/flattening/boolbv.h>
@@ -54,7 +55,7 @@ const exprt* implication(const exprt& original, exprt::operandst& disabled) {
 
 // The dual safety property is violated exactly when an enabled match
 // completes. Keep disable conditions at the starting sample (spec 21 §1).
-exprt unreachable(const exprt& implication, exprt::operandst disabled, const namespacet& ns) {
+exprt unreachable(const exprt& implication, exprt::operandst disabled, const namespacet& ns, bool buechi) {
     auto lhs = to_binary_expr(implication).lhs();
     if (lhs.id() == ID_sva_boolean) lhs = exprt{to_sva_boolean_expr(lhs).op()};
     lhs = simplify_expr(std::move(lhs), ns);
@@ -64,6 +65,12 @@ exprt unreachable(const exprt& implication, exprt::operandst disabled, const nam
     if (lhs.type().id() == ID_verilog_sva_sequence) {
         if (implication.id() == ID_sva_non_overlapped_implication && admits_empty(lhs))
             lhs = true_exprt{};
+        else if (buechi && disabled.empty()) {
+            // EBMC lowers assertion-local captures on implication nodes. A
+            // completed nonempty match is exactly a violation of A |-> false.
+            return normalize_property(
+                sva_always_exprt{sva_overlapped_implication_exprt{std::move(lhs), false_exprt{}}});
+        }
         else
             lhs = normalize_property(sva_strong_exprt{ID_sva_strong, std::move(lhs)});
     }
@@ -200,6 +207,8 @@ void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_pro
                        const ReportOriginal& report, const ReportVacuity& publish) {
     const namespacet ns(system.symbol_table);
     const bool bounded = task.mode.value == front::Mode::bmc;
+    const bool pdr = task.mode.value == front::Mode::pdr;
+    const bool buechi = pdr || task.mode.value == front::Mode::kind;
     const std::size_t bound = bounded ? task.depth->value : 20;
     const std::string original = bounded ? "passed" : "proved";
     const auto detail = bounded ? "bmc depth " + std::to_string(bound) : "";
@@ -213,7 +222,7 @@ void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_pro
         if (!body) continue;
         auto probe = p;
         try {
-            probe.original_expr = unreachable(*body, std::move(disabled), ns);
+            probe.original_expr = unreachable(*body, std::move(disabled), ns, buechi);
         } catch (...) {
             probe.failure(failure_reason());
         }
@@ -229,10 +238,12 @@ void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_pro
     bool checking = false;
     using Clock = std::chrono::steady_clock;
     const auto start = Clock::now();
-    auto after = [&](ebmc_propertiest::propertiest& results) {
-        const auto original_time = Clock::now() - start;
+    Clock::duration original_time{};
+    auto record = [&](const transition_systemt& model, const ebmc_propertiest& queries,
+                      ebmc_propertiest::propertiest& results) {
+        original_time = Clock::now() - start;
         // An unsupported assumption invalidates the entire batch.
-        for (auto& p : results) if (p.is_assumption()) report(p);
+        for (auto& p : results) if (p.is_assumption()) report(model, queries, p);
         for (auto& p : results) {
             if (p.is_disabled() || p.is_assumption()) continue;
             const bool success = p.is_proved() || (bounded && p.is_proved_with_bound());
@@ -243,9 +254,11 @@ void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_pro
             } else if (success && probes.count(p.identifier)) {
                 publish(p.identifier, "checking", original);
                 pending.insert(p.identifier);
-            } else report(p);
+            } else report(model, queries, p);
         }
         checking = true;
+    };
+    auto sample = [&] {
         if (!pending.empty()) {
             const auto now = Clock::now();
             const auto budget = deadline == Deadline::max() ? original_time :
@@ -279,27 +292,56 @@ void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_pro
                                              "antecedent proved unreachable");
         else publish(id, "unknown", original + "; vacuity check: " + probe.status_as_string());
     };
-    auto check = [&](ebmc_propertiest& queries) {
-        auto result = property_checker(cmd, system, queries, messages);
+    auto fresh_model = [&] {
+        auto model = system;
+        model.main_symbol = &model.symbol_table.lookup_ref(system.main_symbol->name);
+        return model;
+    };
+    auto check = [&](transition_systemt& model, ebmc_propertiest& queries) {
+        if (buechi)
+            instrument_buechi(model, queries, pdr, messages);
+        auto result = property_checker(cmd, model, queries, messages);
         if (result.status != property_checker_resultt::statust::VERIFICATION_RESULT)
             throw std::runtime_error("EBMC did not return verification results");
         return result;
     };
     try {
-        if (bounded && !probes.empty()) {
-            bounded_checks(cmd, system, batch, probes, bound, [&](ebmc_propertiest& checked) {
-                return after(checked.properties);
-            }, finish, messages);
-        } else {
-            auto result = check(batch);
-            after(result.properties);
-            if (pending.empty()) return;
-            // Give the original engine only assumptions and the new obligations.
+        if (bounded) {
+            if (probes.empty()) {
+                auto result = check(system, batch);
+                record(system, batch, result.properties);
+            } else {
+                bounded_checks(cmd, system, batch, probes, bound, [&](ebmc_propertiest& checked) {
+                    record(system, checked, checked.properties);
+                    return sample();
+                }, finish, messages);
+            }
+            return;
+        }
+        // Monitor installation changes both the properties and the transition
+        // relation. Release this copy before sampling the original design.
+        {
+            auto primary = fresh_model();
+            auto queries = batch;
+            auto result = check(primary, queries);
+            record(primary, queries, result.properties);
+        }
+        sample();
+        if (!pending.empty()) {
+            auto model = fresh_model();
             ebmc_propertiest queries;
             for (const auto& p : batch.properties)
                 if (p.is_assumption()) queries.properties.push_back(p);
-            for (const auto& id : pending) queries.properties.push_back(probes.at(id));
-            const auto exact = check(queries);
+            for (const auto& id : pending) {
+                const auto& probe = probes.at(id);
+                auto symbol = model.symbol_table.lookup_ref(id);
+                symbol.name = probe.identifier;
+                symbol.value = probe.original_expr;
+                if (model.symbol_table.add(std::move(symbol)))
+                    throw std::runtime_error("duplicate antecedent symbol: " + id2string(probe.identifier));
+                queries.properties.push_back(probe);
+            }
+            const auto exact = check(model, queries);
             for (const auto& p : exact.properties)
                 if (p.is_assumption() && !p.is_assumed()) throw std::runtime_error(p.status_as_string());
             for (const auto& p : exact.properties) {

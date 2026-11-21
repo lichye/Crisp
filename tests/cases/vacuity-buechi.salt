@@ -1,0 +1,40 @@
+[tasks]
+kind
+pdr
+free_kind
+free_pdr
+local_kind
+local_pdr
+free_local_kind
+free_local_pdr
+multi
+
+[files]
+vacuity-buechi.sv
+
+[design]
+top vacuity_monitor
+clock clk
+reset rst high
+free_kind: define NO_CONTRACT
+free_pdr: define NO_CONTRACT
+free_local_kind: define NO_CONTRACT
+free_local_pdr: define NO_CONTRACT
+
+[options]
+mode pdr
+kind: mode kind
+kind: depth 5
+free_kind: mode kind
+free_kind: depth 5
+local_kind: mode kind
+local_kind: depth 5
+free_local_kind: mode kind
+free_local_kind: depth 5
+local_kind: veval only
+local_pdr: veval only
+free_local_kind: veval only
+free_local_pdr: veval only
+properties vacuity_monitor.leaf.*
+multi: properties vacuity_monitor.next_bad
+multi: properties vacuity_monitor.later_bad

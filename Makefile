@@ -47,6 +47,9 @@ test-front: build/crisp build/tests/test-front
 	bash tests/front/run.sh
 
 test: test-front
+	+$(MAKE) -s -C $(HWCBMC)/src/ebmc -f Makefile -f "$(abspath src/check/ebmc.mk)" \
+		CRISP_ROOT="$(CURDIR)" "$(abspath build/tests/test-witness)"
+	build/tests/test-witness
 	bash tests/cases/run.sh
 
 $(SLANG)/CMakeLists.txt:

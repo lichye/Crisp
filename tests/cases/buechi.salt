@@ -1,0 +1,40 @@
+[tasks]
+kind
+pdr
+free_kind
+free_pdr
+multi_pdr
+unsupported_contract
+
+[files]
+buechi.sv
+
+[design]
+top buechi
+clock clk
+reset rst high
+free_kind: define NO_CONTRACT
+free_pdr: define NO_CONTRACT
+unsupported_contract: define LIVE_CONTRACT
+
+[options]
+kind:
+mode kind
+depth 5
+properties buechi.p_quiet
+free_kind:
+mode kind
+depth 5
+properties buechi.p_quiet
+pdr:
+mode pdr
+properties buechi.p_quiet
+free_pdr:
+mode pdr
+properties buechi.p_quiet
+multi_pdr:
+mode pdr
+properties buechi.*
+unsupported_contract:
+mode pdr
+properties buechi.p_quiet

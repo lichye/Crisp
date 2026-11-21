@@ -164,11 +164,14 @@ void check_options(const front::Task& task) {
                                  ": [options] level word: yices-smt2 not found in PATH; "
                                  "install yices or add its directory to PATH");
     }
-    // veval encodes temporal properties with Spot's ltl2tgba (spec 25).
-    if (task.veval.value != front::ToolUse::off && !on_path("ltl2tgba")) {
-        const auto& veval = task.veval.source.value();
-        throw std::runtime_error(veval.file.string() + ":" + std::to_string(veval.line) + ": [options] veval " +
-                                 std::string(front::spelling(task.veval.value)) +
+    // veval lowering and the kind/PDR Büchi conversion both use Spot.
+    const bool veval = task.veval.value != front::ToolUse::off;
+    const bool buechi = task.mode.value == front::Mode::kind || task.mode.value == front::Mode::pdr;
+    if ((veval || buechi) && !on_path("ltl2tgba")) {
+        const auto& source = (veval ? task.veval.source : task.mode.source).value();
+        const auto option = veval ? "veval " + std::string(front::spelling(task.veval.value)) :
+                                   "mode " + std::string(front::spelling(task.mode.value));
+        throw std::runtime_error(source.file.string() + ":" + std::to_string(source.line) + ": [options] " + option +
                                  ": ltl2tgba not found in PATH; install Spot "
                                  "(https://spot.lre.epita.fr/install.html) or add its bin directory to PATH");
     }
@@ -515,11 +518,12 @@ std::vector<VevalJob> read_products(const fs::path& dir) {
     return jobs;
 }
 
-std::string first_line(const fs::path& file) {
+std::string last_diagnostic(const fs::path& file) {
     std::ifstream in(file);
-    std::string line;
-    std::getline(in, line);
-    return line;
+    std::string latest;
+    for (std::string line; std::getline(in, line);)
+        if (!line.empty()) latest = std::move(line);
+    return latest;
 }
 
 struct VevalResult {
@@ -683,10 +687,10 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
         if (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0) {
             if (status == "checking") {
                 status = "unknown";
-                detail += "; vacuity check failed: " + first_line(dir / "diagnostics.log");
+                detail += "; vacuity check failed: " + last_diagnostic(dir / "diagnostics.log");
             } else {
                 status = "error";
-                detail = "EBMC failed: " + first_line(dir / "diagnostics.log");
+                detail = "EBMC failed: " + last_diagnostic(dir / "diagnostics.log");
             }
         }
         if (status == "proved") {
@@ -698,7 +702,10 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             decided[job.property] = {job.property, status, detail + " in " + job.instance + " (veval)" + context};
         } else if (status == "refuted") {
             const auto wave = task_output_dir(task) / "veval" / file_name(job.property) / (file_name(job.instance) + ".vcd");
-            if (publish_file(dir / "0.vcd", wave, deadline)) {
+            if (!detail.empty()) {
+                detail = "local counterexample in " + job.instance + " (" + detail + ")" + context;
+                notes[job.property].push_back(detail);
+            } else if (publish_file(dir / "0.vcd", wave, deadline)) {
                 detail = "local counterexample in " + job.instance + " " + wave.string() + context;
                 notes[job.property].push_back(detail);
             } else {
@@ -907,7 +914,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         // A checking event carries the original proof. The parent settles it
         // below after waiting. Discovery alone carries no assertion result.
         const bool reported = p.status != "pending";
-        if (p.status == "refuted") {
+        if (p.status == "refuted" && p.detail.empty()) {
             auto dest = wave_path(task, p.name);
             if (publish_file(scratch.path / (std::to_string(i) + ".vcd"), dest, deadline))
                 p.detail = dest.string();

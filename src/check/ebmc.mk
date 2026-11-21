@@ -51,3 +51,13 @@ $(CRISP_ROOT)/build/crisp: $(CRISP_OBJECTS) $(CRISP_ADAPTER) $(CRISP_LOWER) $(CR
 	@set -e; staging=$$(mktemp -d "$(@D)/.link.XXXXXX"); \
 	trap 'rm -rf -- "$$staging"' EXIT; \
 	$(subst $@,"$$staging/crisp",$(LINKBIN)); mv -- "$$staging/crisp" "$@"
+
+CRISP_WITNESS_TEST := $(CRISP_ROOT)/build/tests/witness.o
+$(CRISP_WITNESS_TEST): $(CRISP_ROOT)/tests/cases/witness.cpp $(CRISP_ROOT)/src/check/ebmc.mk
+	@mkdir -p "$(@D)"
+	$(CXX) $(CP_CXXFLAGS) -I"$(CRISP_ROOT)/src" -c $< -o $@
+
+-include $(CRISP_WITNESS_TEST:.o=.d)
+
+$(CRISP_ROOT)/build/tests/test-witness: $(CRISP_WITNESS_TEST) $(filter-out main.o,$(OBJ))
+	$(LINKBIN)
