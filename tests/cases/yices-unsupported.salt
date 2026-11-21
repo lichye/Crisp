@@ -1,0 +1,24 @@
+[tasks]
+bool_word
+bool_auto
+grid_word
+grid_auto
+
+[files]
+bool_word: bool-memory.sv
+bool_auto: bool-memory.sv
+grid_word: grid.sv
+grid_auto: grid.sv
+
+[design]
+bool_word: top bool_memory
+bool_auto: top bool_memory
+grid_word: top grid
+grid_auto: top grid
+
+[options]
+mode bmc
+level word
+depth 3
+bool_auto: level auto
+grid_auto: level auto

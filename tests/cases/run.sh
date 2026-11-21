@@ -309,6 +309,25 @@ for pid in $(pgrep -f yices-smt2 || true); do
     fi
 done
 
+# Designs that Yices 2.7 rejects (spec 19, 3.6): EBMC reports FAILURE at
+# level word, and no verdict is given; level auto still decides them. When
+# the solver handles these, check instead that level word agrees with auto.
+for case in 'bool bool_memory.p_written bool_memory.p_equal' 'grid grid.p_kept grid.p_zero'; do
+    read -r task holds fails <<< "$case"
+    run 2 yices-unsupported "${task}_word"
+    has "crisp: $holds: " err
+    has 'FAILURE' err
+    if grep -Eq '  (proved|passed|refuted)  ' out; then
+        cat out err >&2
+        echo "yices-unsupported ${task}_word: expected no verdict" >&2
+        exit 1
+    fi
+    has '1 task, 0 proved, 0 passed, 0 refuted, 2 unknown'
+    run 1 yices-unsupported "${task}_auto"
+    has "$holds  passed"
+    has "$fails  refuted"
+done
+
 # Without yices-smt2 on PATH, the task is not solved.
 mkdir -p no-yices
 status=0
