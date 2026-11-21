@@ -317,24 +317,14 @@ bool publish_file(const fs::path& from, const fs::path& to, Clock::time_point de
     }
     return true;
 }
-fs::path smart_executable() {
-    if (const char* path = std::getenv("CRISP_SMART"))
+fs::path component_executable(const char* env, const char* name, const char* source_path) {
+    if (const char* path = std::getenv(env))
         return fs::absolute(path);
 
     const auto bin = veval::util::currentExecutable().parent_path();
-    const auto sibling = bin / "smart";
+    const auto sibling = bin / name;
     if (fs::is_regular_file(sibling)) return sibling;
-    return bin.parent_path() / "src/components/smartVerilog/build/smart";
-}
-
-fs::path slang_executable() {
-    if (const char* path = std::getenv("CRISP_SLANG"))
-        return fs::absolute(path);
-
-    const auto bin = veval::util::currentExecutable().parent_path();
-    const auto sibling = bin / "slang";
-    if (fs::is_regular_file(sibling)) return sibling;
-    return bin.parent_path() / "src/components/slang/build/bin/slang";
+    return bin.parent_path() / source_path;
 }
 
 // "<.salt>:<line>:" of the rtl-mode line, or of the task when the key is not written.
@@ -365,7 +355,7 @@ std::string slang_errors(const std::string& log) {
 // that EBMC gets, within the task's timeout and memory limit. Returns false after
 // printing slang's errors.
 bool check_rtl(const front::Task& task, const fs::path& scratch, Clock::time_point deadline) {
-    const auto executable = slang_executable();
+    const auto executable = component_executable("CRISP_SLANG", "slang", "src/components/slang/build/bin/slang");
     if (::access(executable.c_str(), X_OK) != 0 || !fs::is_regular_file(executable))
         throw std::runtime_error(rtl_mode_location(task) + " rtl-mode strict: slang not found at " + executable.string() +
                                  ". Run 'make slang' or set CRISP_SLANG, or write rtl-mode relaxed to skip the check");
@@ -420,7 +410,7 @@ bool check_rtl(const front::Task& task, const fs::path& scratch, Clock::time_poi
 }
 
 void mine(const front::Task& task, const fs::path& scratch, Clock::time_point deadline) {
-    const auto executable = smart_executable();
+    const auto executable = component_executable("CRISP_SMART", "smart", "src/components/smartVerilog/build/smart");
     if (::access(executable.c_str(), X_OK) != 0)
         throw std::runtime_error("SMART executable not found at " + executable.string() +
                                  ". Run 'make smart' or set CRISP_SMART");
