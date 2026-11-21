@@ -160,7 +160,7 @@ void check_options(const front::Task& task) {
     }
     if (task.smart.value == front::ToolUse::only)
         throw std::runtime_error("smart only is not supported");
-    if (task.smart.source && task.smart.value == front::ToolUse::on &&
+    if (task.smart.value == front::ToolUse::on &&
         (!task.includes.empty() || !task.defines.empty()))
         throw std::runtime_error("smart on does not support [design] include or define yet");
 }
@@ -700,9 +700,9 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         return;
     }
     const auto timeout = "timeout after " + std::to_string(seconds) + " s";
-    // veval on / only, written explicitly like smart on (spec 25).
+    // veval on / only (spec 25).
     std::set<std::string> decided;
-    if (task.veval.source && task.veval.value != front::ToolUse::off) {
+    if (task.veval.value != front::ToolUse::off) {
         auto result = run_veval(task, scratch.path, deadline, timeout);
         if (result.failed) {
             summary.error = true;
@@ -724,7 +724,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         decided = std::move(result.decided); // the whole design checks the rest
     }
     const auto wait = [&] {
-        if (task.smart.source && task.smart.value == front::ToolUse::on) {
+        if (task.smart.value == front::ToolUse::on) {
             // SMART also consumes reset and runs checks. Validate before starting it.
             if (task.reset) {
                 const auto validated = run_worker(task, scratch.path, deadline, events, EngineRun::validate_reset);

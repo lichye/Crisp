@@ -30,7 +30,7 @@ the pinned cvc5 package. Put Verilator on `PATH`, or run `make deps` to install
 the external simulator suite. `src/components/smartVerilog/build/smart --check-env`
 prints the tools it will use.
 
-Adding `smart on` explicitly under `[options]` runs the miner before checking
+Writing `smart on` under `[options]` runs the miner before checking
 the original properties. SMART writes the checked assertions to
 `crisp-out/<salt-name>[_<task>]/smart_assertion.sv`. Crisp then checks the
 original design with its original assumptions. When `top` is omitted, SMART
@@ -54,7 +54,7 @@ For the component workflows on Ubuntu 24.04 x86-64, install the host development
 
 Run `make slang` before `make test`: by default (`rtl-mode strict`) each `.salt` task first checks the RTL with slang, built from the pinned `src/components/slang` submodule; set `CRISP_SLANG` to use another slang, or write `rtl-mode relaxed` under `[options]` to skip the check.
 
-Writing `veval on` or `veval only` under `[options]` lowers the assertions with veval and checks each landing instance with Crisp's EBMC; `veval on` then checks what veval did not prove on the whole design. Without a `veval` line a task runs as before.
+Writing `veval on` or `veval only` under `[options]` lowers the assertions with veval and checks each landing instance with Crisp's EBMC; `veval on` then checks what veval did not prove on the whole design. SMART and veval are off unless written.
 
 Tasks with `level word` run EBMC's word-level SMT and need Yices's `yices-smt2` on `PATH`, for example from the OSS CAD Suite. `make test` requires it.
 

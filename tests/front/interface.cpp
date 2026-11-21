@@ -87,8 +87,8 @@ void check_fifo(const fs::path& file, std::uint64_t cpus, const FifoLines& ln) {
     require(second.name.value().value == "task2", "second task name");
     origin(*second.name, salt, ln.second_name);
     require(second.mode.value == Mode::automatic && !second.mode.source &&
-            second.smart.value == ToolUse::on && !second.smart.source &&
-            second.veval.value == ToolUse::on && !second.veval.source, "task2 default options");
+            second.smart.value == ToolUse::off && !second.smart.source &&
+            second.veval.value == ToolUse::off && !second.veval.source, "task2 default options");
     require(second.thread.value == cpus && !second.thread.source && !second.ram_mib &&
             second.timeout_seconds.value == 60 && !second.timeout_seconds.source, "task2 default resources");
 }
