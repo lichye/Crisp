@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -584,18 +586,19 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             }
         }
     }
-    std::vector<std::size_t> work;
+    std::map<std::size_t, std::deque<std::size_t>, std::greater<>> work;
+    const auto enqueue = [&](std::size_t index) { work[jobs[index].depth].push_back(index); };
     for (const auto& leaf : veval::verification::deepestBranchLandings(candidates, parents))
-        work.push_back(std::stoul(ids.at(leaf)));
+        enqueue(std::stoul(ids.at(leaf)));
 
     std::map<std::string, Property> decided;
     std::map<std::string, std::vector<std::string>> notes;
     std::size_t checks = 0;
     while (!work.empty()) {
-        const auto next = std::max_element(work.begin(), work.end(),
-                                           [&](auto a, auto b) { return jobs[a].depth < jobs[b].depth; });
-        const auto& job = jobs[*next];
-        work.erase(next);
+        const auto next = work.begin();
+        const auto& job = jobs[next->second.front()];
+        next->second.pop_front();
+        if (next->second.empty()) work.erase(next);
         if (decided.count(job.property)) continue;
         if (Clock::now() >= deadline) {
             result.timed_out = true;
@@ -703,7 +706,7 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             }
             const auto parent = veval::verification::ancestorRecheck({job.property, job.instance}, "completed",
                                                                      "refuted", ids, parents, task.top->value);
-            if (!parent.empty()) work.push_back(std::stoul(parent));
+            if (!parent.empty()) enqueue(std::stoul(parent));
         } else {
             notes[job.property].push_back(job.instance + ": no local conclusion (" + detail + ")" + context);
             if (status == "checking") {
