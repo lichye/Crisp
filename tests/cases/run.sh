@@ -453,6 +453,14 @@ has 'veval-unreadable.sv line 3' err
 # A struct port read field by field: the product keeps the port's type.
 run 0 veval struct
 has 'proved in struct_top.u_child (veval)'
+# A compact helper has an unpacked array input. A second property whose
+# helper cannot be written must leave the first local check usable.
+run 0 veval array_function
+has 'passed in array_function_top.u_child (veval), bmc depth 2'
+run 3 veval array_function_unprintable
+has 'passed in array_function_top.u_child (veval), bmc depth 2'
+has 'array_function_top.p_update  unknown'
+has 'veval: no landing'
 # veval's local environment (spec 25, 2.4): an observed internal register,
 # a reset asserted at the initial instant, and a clamp on an input.
 run 0 veval observe
@@ -473,7 +481,8 @@ mkdir -p no-spot
 status=0
 timeout 11 env PATH="$work/no-spot" "$root/build/crisp" "$root/tests/cases/veval.salt" assumed >out 2>err || status=$?
 [[ $status == 2 ]]
-has "crisp: $root/tests/cases/veval.salt:67: [options] veval only: ltl2tgba not found in PATH; install Spot (https://spot.lre.epita.fr/install.html) or add its bin directory to PATH" err
+veval_only_line=$(grep -nx 'veval only' "$root/tests/cases/veval.salt" | cut -d: -f1)
+has "crisp: $root/tests/cases/veval.salt:$veval_only_line: [options] veval only: ltl2tgba not found in PATH; install Spot (https://spot.lre.epita.fr/install.html) or add its bin directory to PATH" err
 [[ $(wc -l < err) == 1 ]]
 has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 # Without a veval line the task runs as before.

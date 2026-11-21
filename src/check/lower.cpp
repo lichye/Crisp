@@ -107,6 +107,7 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
     auto transports = lowering::lowerProperties(set, edges, aliases, attribution, blackboxes, &stopped, 1,
                                                 &definitions);
 
+    lowering::prepareProductFunctions(transports, ns);
     auto environments = environment::environment(transports, edges, system, ns);
     std::map<std::string, std::string> fingerprints;
     std::map<std::string, std::vector<std::string>> shown;
