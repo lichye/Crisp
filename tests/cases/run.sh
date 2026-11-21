@@ -273,6 +273,7 @@ selected top_only top.p_one top.p_two top.p_still
 selected deep top.u_leaf.q_leaf top.p_one top.p_two top.p_still 'top.g[0].p_gen' 'top.g[1].p_gen'
 selected sub top.u_leaf.q_leaf
 selected generate 'top.g[0].p_gen'
+selected literal top.u_leaf.q_leaf 'top.g[1].p_gen'
 selected single top.p_one
 # p_still holds only under the assumption, which stays in effect.
 selected assumed top.p_still
@@ -335,7 +336,7 @@ for target in next_bad later_bad; do
 done
 
 properties="$root/tests/cases/properties.salt"
-for unmatched in 'nomatch 32 top.absent*' 'dot 33 top?p_one'; do
+for unmatched in 'nomatch 34 top.absent*' 'dot 35 top?p_one' 'literal_miss 39 top.u_leaf.q_leag'; do
     read -r task line pattern <<< "$unmatched"
     reported 2 "$task" -
     has "$properties:$line: [options] properties: pattern '$pattern' matches no assertion" err
