@@ -129,6 +129,21 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
         if (!row.stopReason.empty()) reason += ", " + row.stopReason;
         reporter.send(0, "missing", row.instance + '\t' + row.property + '\t' + reason);
     }
+    // A reset contract that gives a checked instance no initial-state premise
+    // leaves its check without the reset.
+    for (const auto& monitor : set.monitors) {
+        if (!monitor.isResetContract) continue;
+        for (const auto& instance : checked) {
+            const auto found = environments.find(instance);
+            bool reset = false;
+            if (found != environments.end())
+                for (const auto& premise : found->second.premises)
+                    reset = reset || premise.source == environment::Premise::Source::ResetContract;
+            if (!reset)
+                reporter.send(0, "missing", instance + '\t' + monitor.property + '\t' +
+                              "no initial-state reset can be stated here");
+        }
+    }
 
     lowering::ModuleSpecOptions products;
     products.boundary = task.top->value;
