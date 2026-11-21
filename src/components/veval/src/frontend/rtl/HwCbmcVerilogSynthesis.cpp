@@ -1203,11 +1203,15 @@ void verilog_synthesist::assignment_rec(
           << ", old: " << as_string(assignment.type) << ")" << note;
       }
 
-      membert member;
-      assignment_member_rec(
-        lhs,
-        member,
-        (construct == constructt::INITIAL) ? assignment.init : assignment.next);
+      auto &data =
+        construct == constructt::INITIAL ? assignment.init : assignment.next;
+      if(register_ram_word_write(symbol, lhs, blocking, data))
+        data.assigned_current.emplace_back();
+      else
+      {
+        membert member;
+        assignment_member_rec(lhs, member, data);
+      }
     }
   }
 
@@ -2259,6 +2263,113 @@ void verilog_synthesist::expand_module_instance(
   instantiate_ports(instance.base_name(), instance, module_symbol, trans_dest);
 }
 
+bool verilog_synthesist::register_ram_word_write(
+  const symbolt &symbol,
+  const exprt &lhs,
+  bool blocking,
+  assignmentt::datat &data)
+{
+  if(ram_clock.is_nil() || event_guard != event_guardt::CLOCK)
+    return false;
+
+  if(auto current = ram_word_writes.find(symbol.name);
+     current != ram_word_writes.end())
+    current->second = nil_exprt{};
+
+  if(
+    blocking || !data.assigned_current.empty() || lhs.id() != ID_index ||
+    to_index_expr(lhs).array().id() != ID_symbol ||
+    !to_verilog_array_type(symbol.type).is_unpacked())
+    return false;
+
+  const auto &index = to_index_expr(lhs).index();
+  if(numeric_cast<mp_integer>(simplify_expr(index, ns)))
+    return false;
+
+  ram_word_writes.emplace(symbol.name, index);
+
+  const auto first = first_ram_ports.find(symbol.name);
+  return first != first_ram_ports.end() && first->second.clock == ram_clock;
+}
+
+exprt verilog_synthesist::commit_ram_port(
+  const symbolt &symbol,
+  exprt value,
+  const exprt &previous,
+  const source_locationt &location)
+{
+  const auto update = ram_word_writes.find(symbol.name);
+  if(update == ram_word_writes.end())
+    return value;
+
+  const auto base =
+    previous.is_nil() ? symbol_expr(symbol, CURRENT) : previous;
+  const exprt *write = &value;
+  exprt::operandst guards;
+  while(true)
+  {
+    if(write->id() == ID_symbol && new_wires.count(write->get(ID_identifier)))
+      write = &assignments.at(write->get(ID_identifier)).next.value;
+    else if(write->id() == ID_if)
+    {
+      const auto &branch = to_if_expr(*write);
+      if(branch.false_case() == base)
+      {
+        guards.push_back(branch.cond());
+        write = &branch.true_case();
+      }
+      else if(branch.true_case() == base)
+      {
+        guards.push_back(not_exprt{branch.cond()});
+        write = &branch.false_case();
+      }
+      else
+        break;
+    }
+    else
+      break;
+  }
+
+  const auto first = first_ram_ports.find(symbol.name);
+  const bool second = first != first_ram_ports.end();
+  if(
+    write->id() != ID_with || to_with_expr(*write).old() != base ||
+    to_with_expr(*write).where() != update->second)
+  {
+    if(second)
+      throw errort().with_location(location)
+        << "conflict with previous assignment to " << symbol.display_name()
+        << ": expected one guarded, nonblocking write to a RAM word";
+    return value;
+  }
+
+  const auto &store = to_with_expr(*write);
+  auto enable = conjunction(guards);
+  if(!second)
+  {
+    if(previous.is_nil())
+      first_ram_ports.emplace(
+        symbol.name, ram_portt{ram_clock, std::move(enable), store.where()});
+    return value;
+  }
+
+  // Both addresses, data and enables are sampled before the edge. Independent
+  // NBA processes can commit in either order (IEEE 1800-2017 4.6, 4.7, 4.9.4).
+  // Match EBMC: distinct writes both commit, an enabled collision picks one
+  // complete word, and every address without an enabled write retains its data.
+  nondet_symbol_exprt second_wins{
+    id2string(symbol.name) + "::write_order", bool_typet{}};
+  auto allowed = and_exprt{
+    enable,
+    or_exprt{
+      not_exprt{first->second.enable},
+      notequal_exprt{first->second.address, store.where()},
+      second_wins}};
+  first_ram_ports.erase(first);
+  return if_exprt{
+    allowed, with_exprt{previous, store.where(), store.new_value()}, previous};
+}
+
 /*******************************************************************\
 
 Function: verilog_synthesist::synth_always_base
@@ -2290,6 +2401,19 @@ void verilog_synthesist::synth_always_base(
       false, "unknown always construct: " + module_item.id_string());
 
   event_guard=event_guardt::NONE;
+  ram_word_writes.clear();
+  ram_clock.make_nil();
+  if(construct == constructt::ALWAYS && module_item.statement().id() == ID_event_guard)
+  {
+    const auto &guard = to_verilog_event_guard(module_item.statement()).guard();
+    const exprt &event = guard.operands().size() == 1 &&
+                         guard.id() != ID_posedge && guard.id() != ID_negedge
+                           ? guard.operands().front()
+                           : guard;
+    if(event.id() == ID_posedge || event.id() == ID_negedge)
+      ram_clock = event;
+  }
+
 
   value_mapt always_value_map;
   DATA_INVARIANT(value_map == nullptr, "always/initial must not nest");
@@ -2300,10 +2424,16 @@ void verilog_synthesist::synth_always_base(
   for(const auto & it : value_map->final.changed)
   {
     assignmentt &assignment=assignments[it];
-    assignment.next.value=value_map->final.symbol_map[it];
+    assignment.next.value = commit_ram_port(
+      symbol_table_lookup(it),
+      std::move(value_map->final.symbol_map[it]),
+      assignment.next.value,
+      module_item.source_location());
     assignment.next.move_assignments();
   }
 
+  ram_word_writes.clear();
+  ram_clock.make_nil();
   value_map=NULL;
 }
 
@@ -4783,6 +4913,7 @@ transt verilog_synthesist::convert_module_items(const symbolt &symbol)
   continuously_assigned.clear();
   procedurally_assigned.clear();
   mixed_initial_reads.clear();
+  first_ram_ports.clear();
   has_initial_continuous_read = false;
   invars.clear();
 

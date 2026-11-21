@@ -49,6 +49,16 @@ if(BUILD_TESTING)
                 "-DEBMC=${veval_test_ebmc}" "-DFIXTURES=${CMAKE_CURRENT_SOURCE_DIR}/test"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/test/AggregatePortProduct.cmake")
     endif()
+    add_executable(veval_dual_port_ram_test test/DualPortRam.cpp)
+    target_link_libraries(veval_dual_port_ram_test PRIVATE veval_frontend)
+    add_test(NAME veval.dual_port_ram COMMAND veval_dual_port_ram_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/dual_port_ram.sv")
+    if(EXISTS "${veval_test_ebmc}")
+        add_test(NAME veval.dual_port_ram_ebmc
+            COMMAND "${CMAKE_COMMAND}" "-DEBMC=${veval_test_ebmc}"
+                "-DDESIGN=${CMAKE_CURRENT_SOURCE_DIR}/test/dual_port_ram.sv"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/test/DualPortRamEbmc.cmake")
+    endif()
 endif()
 
 add_library(veval_sva STATIC ${VEVAL_SRC}/frontend/sva/PropertyMonitor.cpp

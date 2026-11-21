@@ -191,6 +191,19 @@ protected:
   exprt rewrite_initial_reads(const exprt &);
   mutable bool has_initial_continuous_read = false;
   
+  // A plain edge-triggered always can be one of two independent RAM ports.
+  struct ram_portt
+  {
+    exprt clock, enable, address;
+  };
+  exprt ram_clock = nil_exprt{};
+  std::map<irep_idt, exprt> ram_word_writes;
+  std::map<irep_idt, ram_portt> first_ram_ports;
+  bool register_ram_word_write(
+    const symbolt &, const exprt &, bool blocking, assignmentt::datat &);
+  exprt commit_ram_port(
+    const symbolt &, exprt, const exprt &, const source_locationt &);
+
   // for assumes
   typedef std::list<exprt> invarst;
   invarst invars;
