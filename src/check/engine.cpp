@@ -33,7 +33,12 @@ namespace crisp::check {
 // except '.', '**' any characters, '?' one character except '.'. All other
 // characters, including '[' and ']', match literally.
 bool pattern_matches(std::string_view pattern, std::string_view name) {
-    if (pattern.find_first_of("*?") == pattern.npos) return pattern == name;
+    const auto wildcard = pattern.find_first_of("*?");
+    if (wildcard == pattern.npos) return pattern == name;
+    if (pattern[wildcard] == '*' && pattern.find_first_not_of('*', wildcard) == pattern.npos) {
+        if (name.substr(0, wildcard) != pattern.substr(0, wildcard)) return false;
+        return wildcard + 1 < pattern.size() || name.find('.', wildcard) == name.npos;
+    }
 
     enum class Kind { literal, one, star, stars };
     std::vector<std::pair<Kind, char>> tokens;

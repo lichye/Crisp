@@ -1,0 +1,24 @@
+[tasks]
+empty
+prefix
+recursive
+brackets
+middle
+dot
+case
+
+[files]
+properties.sv
+
+[design]
+top top
+
+[options]
+mode bmc
+empty: properties top.p_one*
+prefix: properties top.p_*
+recursive: properties top.u_***
+brackets: properties top.g[1].p_*
+middle: properties top.*.q_?eaf
+dot: properties top.u_*
+case: properties Top.*
