@@ -7,6 +7,11 @@ if ! command -v yices-smt2 >/dev/null; then
     echo 'tests/cases/run.sh: yices-smt2 not found in PATH; install yices or add its directory to PATH' >&2
     exit 1
 fi
+# veval on / only needs Spot's ltl2tgba (spec 25); the tests need it.
+if ! command -v ltl2tgba >/dev/null; then
+    echo "tests/cases/run.sh: ltl2tgba not found in PATH; install Spot or add its bin directory to PATH" >&2
+    exit 1
+fi
 # rtl-mode strict, the default, runs slang before EBMC (spec 23); the tests need it.
 slang=${CRISP_SLANG:-$root/src/components/slang/build/bin/slang}
 if [[ ! -x $slang ]]; then
@@ -463,6 +468,14 @@ run 3 veval no_reset
 has 'local counterexample in reset_top.u_child'
 run 0 veval unconnected
 has 'proved in unreset_top.u_child (veval); checked without reset: no input of unreset_top.u_child is connected to rst'
+# Without ltl2tgba on PATH, a veval task stops before any check.
+mkdir -p no-spot
+status=0
+timeout 11 env PATH="$work/no-spot" "$root/build/crisp" "$root/tests/cases/veval.salt" assumed >out 2>err || status=$?
+[[ $status == 2 ]]
+has "crisp: $root/tests/cases/veval.salt:67: [options] veval only: ltl2tgba not found in PATH; install Spot (https://spot.lre.epita.fr/install.html) or add its bin directory to PATH" err
+[[ $(wc -l < err) == 1 ]]
+has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 # Without a veval line the task runs as before.
 run 0 token prove
 if grep -Fq 'not connected' out; then
