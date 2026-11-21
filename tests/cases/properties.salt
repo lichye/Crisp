@@ -10,6 +10,8 @@ assumed
 nomatch
 dot
 pdr
+literal
+literal_miss
 
 [files]
 properties.sv
@@ -32,3 +34,6 @@ assumed: properties top.p_still
 nomatch: properties top.absent*
 dot: properties top?p_one
 pdr: properties top.p_*
+literal: properties top.u_leaf.q_leaf
+literal: properties top.g[1].p_gen
+literal_miss: properties top.u_leaf.q_leag
