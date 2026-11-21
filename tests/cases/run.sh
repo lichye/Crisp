@@ -45,6 +45,10 @@ has() {
     fi
 }
 
+progress_file() {
+    sed -n 's/^  progress  //p' out
+}
+
 # Two waveforms are the same apart from the $date block, which EBMC fills with the
 # current time to the second.
 same_vcd() {
@@ -95,6 +99,9 @@ valid_vcd crisp-out/counter_bug/counter.p_range.vcd
 run 1 counter ic3
 has 'counter.p_range  refuted'
 has 'counter.p_stop  proved'
+journal=$(progress_file)
+grep -Fxq $'final\tcounter.p_range\t\trefuted\tcrisp-out/counter_ic3/counter.p_range.vcd' "$journal"
+grep -Fxq $'final\tcounter.p_stop\t\tproved\t' "$journal"
 valid_vcd crisp-out/counter_ic3/counter.p_range.vcd
 
 run 0 reset with_reset
@@ -327,6 +334,8 @@ has 'counter.p_stop  proved'
 run 3 level-word factor
 has 'factor.p_no_factors  unknown'
 has 'timeout after 2 s'
+# The CLI accounts for a timeout; EBMC did not deliver a property verdict.
+[[ $(wc -l < "$(progress_file)") == 1 ]]
 # oss-cad-suite starts yices through its loader, so match the command line.
 for pid in $(pgrep -f yices-smt2 || true); do
     if [[ $(readlink "/proc/$pid/cwd" 2>/dev/null) == "$work"* ]]; then
@@ -447,6 +456,9 @@ for mode in local also_top; do
     has 'guarded_top.child.boolean_arrow  vacuous'
     has 'guarded_top.child.captured  vacuous'
     has 'antecedent not reached within depth 3 in guarded_top.child (veval)'
+    journal=$(progress_file)
+    grep -Fq $'local\tguarded_top.child.overlap\tguarded_top.child\tvacuous\t' "$journal"
+    grep -Fq $'final\tguarded_top.child.overlap\t\tvacuous\t' "$journal"
 done
 
 # The first solver call checks the original assertion. A later error or
@@ -489,6 +501,32 @@ for fault in error timeout; do
     has 'vacuity.late  unknown'
     has 'passed; vacuity check'
     if [[ $fault == timeout ]]; then has 'vacuity check timed out'; fi
+    reason=$(sed -n 's/^  vacuity.late  unknown  [0-9.]* s  //p' out)
+    journal=$(progress_file)
+    [[ $(wc -l < "$journal") == 2 ]]
+    grep -Fxq $'final\tvacuity.late\t\tunknown\t'"$reason" "$journal"
+done
+
+# Time out during the first local vacuity check. Only mode settles that
+# assertion, while on mode still needs a whole-design result.
+for mode in only on; do
+    sed -e 's@/vacuity.sv$@/vacuity-local.sv@' -e 's/top vacuity/top guarded_top/' \
+        -e '/reset rst high/d' -e "s/properties vacuity.late/veval $mode/" vacuity-fault.salt > local-fault.salt
+    rm -f "$VACUITY_MARKER"
+    status=0
+    VACUITY_FAULT=timeout PATH="$work/vacuity-solver:$PATH" timeout 11 \
+        "$root/build/crisp" local-fault.salt >out 2>err || status=$?
+    [[ $status == 3 ]]
+    prop=guarded_top.child.boolean_arrow
+    journal=$(progress_file)
+    grep -Fxq $'local\t'"$prop"$'\tguarded_top.child\tunknown\tpassed; vacuity check timed out' "$journal"
+    if [[ $mode == only ]]; then
+        reason=$(sed -n "s/^  $prop  unknown  [0-9.]* s  //p" out)
+        [[ $reason == *'passed; vacuity check timed out' && $(wc -l < "$journal") == 3 ]]
+        grep -Fxq $'final\t'"$prop"$'\t\tunknown\t'"$reason" "$journal"
+    else
+        [[ $(wc -l < "$journal") == 2 ]]
+    fi
 done
 
 # A hung first random trace spends only its opportunity budget. The original
@@ -559,6 +597,7 @@ run 0 veval up
 has 'proved in up_top.u_mid (veval)'
 run 3 veval missing
 has 'checked without assumption missing_top.sum_small (arrives partial)'
+grep '^local' "$(progress_file)" | grep -Fq 'checked without assumption missing_top.sum_small (arrives partial)'
 run 0 veval selected
 has 'two_top.u_child.p_one  proved'
 [[ $(grep -c '^  two_top\.' out) == 1 ]]
@@ -609,4 +648,5 @@ if grep -Fq 'not connected' out; then
     cat out >&2
     exit 1
 fi
-echo 'EBMC cases passed (Specs 3, 8, 11, 18, 19, 20, 21, 23, and 25).'
+python3 "$root/tests/cases/progress.py" "$root"
+echo 'EBMC cases passed (Specs 3, 8, 11, 18, 19, 20, 21, 23, 25, and 30).'
