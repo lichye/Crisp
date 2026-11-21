@@ -11,6 +11,9 @@ selected
 clocks
 unreadable
 struct
+observe
+reset
+clamp
 
 [files]
 assumed: veval-assumed.sv
@@ -25,6 +28,9 @@ selected: veval-two.sv
 clocks: veval-clocks.sv
 unreadable: veval-unreadable.sv
 struct: veval-struct.sv
+observe: veval-observe.sv
+reset: veval-reset.sv
+clamp: veval-clamp.sv
 
 [design]
 assumed: top assumed_top
@@ -40,6 +46,9 @@ selected: top two_top
 clocks: top two_clocks
 unreadable: top unreadable
 struct: top struct_top
+observe: top observe_top
+reset: top reset_top
+clamp: top clamp_top
 
 [options]
 veval only
