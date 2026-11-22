@@ -211,7 +211,8 @@ std::optional<exprt> local_implication(exprt original) {
 
 void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_propertiest& batch,
                        const front::Task& task, Deadline deadline, message_handlert& messages,
-                       const ReportOriginal& report, const ReportVacuity& publish) {
+                       const ReportOriginal& report, const ReportVacuity& publish,
+                       const witness_lasso_observert& observe_lasso) {
     const namespacet ns(system.symbol_table);
     const bool bounded = task.mode.value == front::Mode::bmc;
     const bool pdr = task.mode.value == front::Mode::pdr;
@@ -270,10 +271,11 @@ void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_pro
                                              "antecedent proved unreachable");
         else publish(id, "unknown", original + "; vacuity check: " + probe.status_as_string());
     };
-    auto check = [&](transition_systemt& model, ebmc_propertiest& queries) {
+    auto check = [&](transition_systemt& model, ebmc_propertiest& queries,
+                     const witness_lasso_observert& observer = {}) {
         if (buechi)
             instrument_buechi(model, queries, pdr, messages);
-        auto result = property_checker(cmd, model, queries, messages);
+        auto result = property_checker(cmd, model, queries, messages, observer);
         if (result.status != property_checker_resultt::statust::VERIFICATION_RESULT)
             throw std::runtime_error("EBMC did not return verification results");
         return result;
@@ -281,14 +283,14 @@ void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_pro
     try {
         if (bounded) {
             if (probes.empty()) {
-                auto result = check(system, batch);
+                auto result = check(system, batch, observe_lasso);
                 record(system, batch, result.properties);
             } else {
                 bounded_checks(cmd, system, batch, probes, task.depth->value, [&](ebmc_propertiest& checked) {
                     property_checker_resultt originals{checked};
                     // Only original counterexamples need the backend's infinite
                     // extension. A passed assertion's probe uses its finite depth.
-                    certify_property_witnesses(cmd, system, originals, task.depth->value, messages);
+                    certify_property_witnesses(cmd, system, originals, task.depth->value, messages, observe_lasso);
                     record(system, checked, originals.properties);
                     return pending;
                 }, finish, messages);
@@ -300,7 +302,7 @@ void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_pro
         {
             auto primary = fresh_model(system);
             auto queries = batch;
-            auto result = check(primary, queries);
+            auto result = check(primary, queries, observe_lasso);
             record(primary, queries, result.properties);
         }
         if (pending.empty()) return;

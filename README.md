@@ -61,3 +61,27 @@ veval, `mode kind` and `mode pdr` require Spot's `ltl2tgba` on `PATH`. Set
 assertions and check their landing instances. `veval on` also checks remaining
 assertions on the whole design. Crisp links its veval support into the checker.
 Run `make veval` to build the standalone veval program.
+
+## Optional lasso certificates
+
+Set `CRISP_LASSO_JSON=1` to request an independently replayable JSON sidecar
+for an explicit lasso found by EBMC on a whole-design safety check.
+
+```sh
+CRISP_LASSO_JSON=1 ./build/crisp tests/cases/lean-lasso.salt
+```
+
+Crisp prints a separate `witness` path under the task output directory. The name
+identifies the progress file for that run. The sidecar contains the compiled
+initial predicate, invariants, transitions, active assumptions and assertion,
+plus the sampled scalar values, including RTL and monitor state. Its final
+frame repeats the indexed loop entry. The verifier evaluates the back edge
+against the transition expression and confirms the assertion fails at the
+stated tick.
+
+Version `crisp-safety-lasso-v1` supports Boolean and finite integer scalar
+values and a restricted set of expressions. Unsupported expressions or absent
+sample values produce a warning. VCD and verdict reporting continue normally.
+Total-prefix and exact BDD verdicts have no lasso sidecar. Check that the
+sidecar came from the desired Crisp run. Replay establishes correctness
+relative to the exported compiled model.

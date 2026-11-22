@@ -1,6 +1,7 @@
 #include "engine.hpp"
 #include "vacuity.hpp"
 #include "wave.hpp"
+#include "witness.hpp"
 
 #include <ebmc/bmc.h>
 #include <ebmc/ebmc_error.h>
@@ -277,6 +278,21 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
     if (ids.empty()) return;
 
     messaget message(messages);
+    witness_lasso_observert observe_lasso;
+    if (operation == EngineRun::solve_with_lasso) {
+        observe_lasso = [&](const witness_lasso_viewt& witness) {
+            const auto property = ids.find(witness.property.identifier);
+            if (property == ids.end()) return;
+            const auto index = property->second;
+            try {
+                write_lasso_json(witness, scratch / (std::to_string(index) + ".witness.json"));
+            } catch (const std::exception& error) {
+                reporter.send(index, "witness-unavailable", error.what());
+            } catch (...) {
+                reporter.send(index, "witness-unavailable", "could not read the certification model");
+            }
+        };
+    }
     auto report = [&](const transition_systemt& model, const ebmc_propertiest& batch, Property& p) {
         if (p.is_assumption()) {
             if (!p.is_assumed()) throw std::runtime_error(id2string(p.name) + ": " + p.status_as_string());
@@ -288,7 +304,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
         // before the original result reaches the parent or progress file.
         if (task.mode.value == Mode::bmc && refuted(p) && (!p.witness_trace || !certified(*p.witness_trace))) {
             auto result = property_checker_resultt{single_target(batch, p)};
-            certify_property_witnesses(cmd, model, result, task.depth->value, messages);
+            certify_property_witnesses(cmd, model, result, task.depth->value, messages, observe_lasso);
             p.copy_results_from(result.properties.back());
         }
         const auto index = ids.at(p.identifier);
@@ -325,7 +341,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
         check_antecedents(cmd, *system, batch, task, deadline, messages, report,
                           [&](const irep_idt& id, const char* status, const std::string& detail) {
                               reporter.send(ids.at(id), status, detail);
-                          });
+                          }, observe_lasso);
     };
     if (task.mode.value != Mode::pdr || ids.size() == 1) {
         check_batch(properties);

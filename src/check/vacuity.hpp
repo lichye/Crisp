@@ -3,6 +3,7 @@
 #include "engine.hpp"
 
 #include <ebmc/ebmc_properties.h>
+#include <ebmc/witness_lasso.h>
 
 #include <functional>
 #include <map>
@@ -15,7 +16,8 @@ std::optional<exprt> local_implication(exprt original);
 using ReportOriginal = std::function<void(const transition_systemt&, const ebmc_propertiest&, ebmc_propertiest::propertyt&)>;
 using ReportVacuity = std::function<void(const irep_idt&, const char*, const std::string&)>;
 void check_antecedents(const cmdlinet&, transition_systemt&, ebmc_propertiest&, const front::Task&,
-                       Deadline, message_handlert&, const ReportOriginal&, const ReportVacuity&);
+                       Deadline, message_handlert&, const ReportOriginal&, const ReportVacuity&,
+                       const witness_lasso_observert& = {});
 
 using Probes = std::map<irep_idt, ebmc_propertiest::propertyt>;
 using Targets = std::set<irep_idt>;
