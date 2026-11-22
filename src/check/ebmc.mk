@@ -1,6 +1,6 @@
 # Loaded after the fork's src/ebmc/Makefile, so the adapter has precisely
 # the same CP_* flags, irep vocabulary and solver libraries as the engine.
-CRISP_ADAPTER := $(addprefix $(CRISP_ROOT)/build/check/,engine.o vacuity.o bounded.o)
+CRISP_ADAPTER := $(addprefix $(CRISP_ROOT)/build/check/,engine.o vacuity.o bounded.o witness.o)
 $(CRISP_ADAPTER): $(CRISP_ROOT)/build/check/%.o: $(CRISP_ROOT)/src/check/%.cpp $(CRISP_ROOT)/src/check/ebmc.mk
 	@mkdir -p "$(@D)"
 	$(CXX) $(CP_CXXFLAGS) -I"$(CRISP_ROOT)/src" -c $< -o $@

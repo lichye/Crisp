@@ -1,0 +1,17 @@
+[files]
+lean-lasso.sv
+
+[design]
+top lasso_alarm
+clock clk
+
+[options]
+mode kind
+level word
+depth 4
+rtl-mode relaxed
+
+[resource]
+thread 1
+ram 128M
+timeout 15

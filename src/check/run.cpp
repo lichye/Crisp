@@ -1,5 +1,6 @@
 #include "run.hpp"
 #include "engine.hpp"
+#include "witness.hpp"
 
 #include <util/process/ChildProcess.h>
 #include <util/process/CurrentExecutablePath.h>
@@ -191,6 +192,7 @@ struct TaskEvents {
     std::vector<std::string> missing; // veval: "instance\tassumption\treason"
     std::vector<std::string> resets;  // veval: "instance\tport on the net of [design] reset"
     std::vector<std::string> undriven;
+    std::map<std::size_t, std::string> witness_unavailable;
 };
 
 TaskEvents read_events(const std::string& events) {
@@ -207,6 +209,8 @@ TaskEvents read_events(const std::string& events) {
             result.missing.push_back(detail);
         else if (status == "reset")
             result.resets.push_back(detail);
+        else if (status == "witness-unavailable")
+            result.witness_unavailable.insert_or_assign(index, detail);
         else if (status == "pending" && index == properties.size())
             properties.push_back({detail, status, {}});
         else {
@@ -253,6 +257,8 @@ public:
         append("stage\tproperty\tinstance\tstatus\tdetail\n");
         std::cout << "  progress  " << path << std::endl;
     }
+
+    std::string artifact_tag() const { return fs::path(path).stem().string(); }
 
     void record(std::string_view stage, const Property& p, std::string_view instance = {}) {
         std::string row;
@@ -897,7 +903,8 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
             }
             mine(task, scratch.path, deadline);
         }
-        return run_worker(task, scratch.path, deadline, events, EngineRun::solve, decided);
+        const auto operation = lasso_json_enabled() ? EngineRun::solve_with_lasso : EngineRun::solve;
+        return run_worker(task, scratch.path, deadline, events, operation, decided);
     }();
     auto reports = read_events(events);
     const bool reject_undriven = task.undriven.value == front::Undriven::error;
@@ -928,9 +935,29 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         const bool reported = p.status != "pending";
         if (p.status == "refuted" && p.detail.empty()) {
             auto dest = wave_path(task, p.name);
-            if (publish_file(scratch.path / (std::to_string(i) + ".vcd"), dest, deadline))
+            if (publish_file(scratch.path / (std::to_string(i) + ".vcd"), dest, deadline)) {
                 p.detail = dest.string();
-            else { p.status = "unknown"; p.detail = timeout; }
+                if (lasso_json_enabled()) {
+                    const auto from = scratch.path / (std::to_string(i) + ".witness.json");
+                    const auto name = file_name(p.name) + "." + progress.artifact_tag() + ".witness.json";
+                    const auto certificate = dest.parent_path() / name;
+                    try {
+                        if (fs::is_regular_file(from)) {
+                            if (publish_file(from, certificate, deadline))
+                                std::cout << "  witness  " << certificate.string() << '\n';
+                            else
+                                std::cerr << "crisp: warning: witness export timed out for " << p.name << '\n';
+                        } else if (auto why = reports.witness_unavailable.find(i);
+                                   why != reports.witness_unavailable.end()) {
+                            std::cerr << "crisp: warning: no witness export for " << p.name << ": "
+                                      << why->second << '\n';
+                        }
+                    } catch (const std::exception& error) {
+                        std::cerr << "crisp: warning: witness export failed for " << p.name << ": "
+                                  << error.what() << '\n';
+                    }
+                }
+            } else { p.status = "unknown"; p.detail = timeout; }
         }
         if (p.status == "checking") {
             p.status = "unknown";
