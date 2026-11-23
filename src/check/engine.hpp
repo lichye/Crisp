@@ -20,7 +20,7 @@ struct Reporter {
 using Deadline = std::chrono::steady_clock::time_point;
 
 // lower runs veval's lowering (spec 25) instead of the engine.
-enum class EngineRun { validate_reset, solve, solve_with_lasso, lower };
+enum class EngineRun { validate_reset, solve, solve_with_lasso, solve_primary, vacuity, lower };
 
 // Returns false when the task's undriven policy rejects the design. A solve
 // run leaves out the assertions named in skip (veval decided them).

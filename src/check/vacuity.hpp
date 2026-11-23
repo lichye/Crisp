@@ -13,27 +13,25 @@ namespace crisp::check {
 
 // Keep the implication printable as SVA when veval transports an assertion.
 std::optional<exprt> local_implication(exprt original);
+bool has_antecedent(const exprt&);
 using ReportOriginal = std::function<void(const transition_systemt&, const ebmc_propertiest&, ebmc_propertiest::propertyt&)>;
-using ReportVacuity = std::function<void(const irep_idt&, const char*, const std::string&)>;
-void check_antecedents(const cmdlinet&, transition_systemt&, ebmc_propertiest&, const front::Task&,
-                       Deadline, message_handlert&, const ReportOriginal&, const ReportVacuity&,
-                       const witness_lasso_observert& = {});
+using ReportVacuity = std::function<void(const irep_idt&, const std::string&)>;
+void check_assertions(const cmdlinet&, const transition_systemt&, const ebmc_propertiest&, const front::Task&,
+                      message_handlert&, const ReportOriginal&, const witness_lasso_observert&);
+void check_bounded_assertions(const cmdlinet&, transition_systemt&, ebmc_propertiest&, const front::Task&,
+                              message_handlert&, const ReportOriginal&, const std::function<void()>&,
+                              const ReportVacuity&, const witness_lasso_observert&);
 
 using Probes = std::map<irep_idt, ebmc_propertiest::propertyt>;
 using Targets = std::set<irep_idt>;
+void check_antecedents(const cmdlinet&, const transition_systemt&, const ebmc_propertiest&, const Targets&,
+                       const front::Task&, Deadline, message_handlert&, const ReportVacuity&);
 using ExactResult = std::function<void(const ebmc_propertiest::propertyt&)>;
 using AfterAssertions = std::function<Targets(ebmc_propertiest&)>;
 
 inline bool refuted(const ebmc_propertiest::propertyt& p) {
     return p.is_refuted() || p.status == ebmc_propertiest::propertyt::statust::REFUTED_WITH_BOUND;
 }
-
-// A finite prefix can seed an independent antecedent search. The original
-// assertion's published counterexample always requires a certified trace.
-enum class TraceRequirement { finite_prefix, certified };
-std::optional<trans_tracet> reconstruct_counterexample(
-    const cmdlinet&, const transition_systemt&, const ebmc_propertiest&, const ebmc_propertiest::propertyt&,
-    TraceRequirement, message_handlert&);
 
 // Both batches use one unwind. The callback publishes original results and
 // returns just the antecedents still needing an exact bounded query.

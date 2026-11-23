@@ -41,16 +41,24 @@ void word_checks(const cmdlinet& cmd, const transition_systemt& system, ebmc_pro
             return;
         }
         const auto obligations = property(p.normalized_expr, !p.is_exists_path(), messages, frames);
-        lasso |= uses_lasso_symbol(obligations);
+        if (uses_lasso_symbol(obligations)) {
+            if (probe) {
+                p.failure("antecedent has no finite match encoding");
+                return;
+            }
+            lasso = true;
+        }
         for (const auto& op : obligations)
             if (!probe || !op.is_true()) p.timeframe_handles.push_back(solver.handle(op));
         if (p.is_assumption()) solver.set_to_true(conjunction(p.timeframe_handles));
     };
     for (auto& p : assertions.properties)
         if (!p.is_disabled()) encode(p, false);
-    // Freeze potential cover handles before the first SAT call: incremental
-    // bit-vector conversion may eliminate unreferenced variables afterwards.
-    for (auto& entry : probes) encode(entry.second, true);
+    // The native SAT solver may eliminate unused variables on its first call.
+    // Yices can add the cover handles after the primary query.
+    const bool defer_probes = cmd.isset("yices");
+    if (!defer_probes)
+        for (auto& entry : probes) encode(entry.second, true);
     if (lasso) lasso_constraints(solver, frames, ns, system.main_symbol->name);
 
     // Like EBMC's batched BMC, one model can refute several properties. The
@@ -94,6 +102,7 @@ void word_checks(const cmdlinet& cmd, const transition_systemt& system, ebmc_pro
     std::map<std::size_t, Batch> windows;
     for (const auto& id : after(assertions)) {
         auto& probe = probes.at(id);
+        if (defer_probes) encode(probe, true);
         if (probe.is_failure()) resolved(probe);
         else windows[probe.timeframe_handles.size()].push_back(&probe);
     }

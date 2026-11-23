@@ -11,14 +11,14 @@ import time
 root = Path(sys.argv[1]).resolve()
 crisp = root / "build/crisp"
 cases = root / "tests/cases"
-header = "stage\tproperty\tinstance\tstatus\tdetail\n"
+header = "stage\tproperty\tinstance\tstatus\tdetail\tvacuity\n"
 
 
 def records(path):
     data = path.read_bytes().decode()
     assert data.startswith(header) and data.endswith("\n"), data
     rows = [line.split("\t") for line in data[len(header):-1].split("\n") if line]
-    assert all(len(row) == 5 for row in rows), rows
+    assert all(len(row) == 6 for row in rows), rows
     return rows
 
 
@@ -86,7 +86,7 @@ assert [row[:4] for row in rows] == [
 wave = Path("crisp-out/veval_up/veval/up_top.p_small/up_top.u_mid.u_leaf.vcd")
 assert str(wave) in rows[0][4] and wave.is_file()
 assert rows[-1][4] == rows[1][4] and rows[-1][4] in run.stdout
-assert run.stdout.endswith("1 task, 1 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown\n")
+assert run.stdout.endswith("1 task, 1 proved, 0 passed, 0 refuted, 0 unknown; vacuity: 0 triggered, 0 not triggered, 0 never triggered, 1 unchecked\n")
 
 # The two deeper landings come first, in their original order. Their parent
 # rechecks join the end of the shallower queue, behind an existing landing.
@@ -102,10 +102,10 @@ assert [row[:4] for row in rows] == [
     ["local", "order_top.c_deep", "order_top.u_mid", "proved"],
     ["final", "order_top.c_deep", "", "proved"],
 ], rows
-assert run.stdout.endswith("1 task, 3 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown\n")
+assert run.stdout.endswith("1 task, 3 proved, 0 passed, 0 refuted, 0 unknown; vacuity: 0 triggered, 0 not triggered, 0 never triggered, 3 unchecked\n")
 
 # The published VCD path includes the unusual SALT stem. Escaping keeps it
-# reversible in a single five-field record, including a literal backslash-t.
+# reversible in a single six-field record, including a literal backslash-t.
 stem = "escaped\\t\t\r\n"
 odd = Path(stem + ".salt")
 odd.write_text(f"[files]\n{cases}/veval-up.sv\n[design]\ntop up_top\n"
