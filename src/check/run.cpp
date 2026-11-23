@@ -191,6 +191,12 @@ void check_options(const front::Task& task) {
 
 struct Property {
     std::string name, status, detail;
+    std::string vacuity = "unchecked";
+    bool has_antecedent = false;
+    std::string_view vacuity_value() const {
+        if (status == "refuted") return "triggered";
+        return vacuity;
+    }
 };
 
 struct TaskEvents {
@@ -199,6 +205,7 @@ struct TaskEvents {
     std::vector<std::string> resets;  // veval: "instance\tport on the net of [design] reset"
     std::vector<std::string> undriven;
     std::map<std::size_t, std::string> witness_unavailable;
+    bool primary_complete = false;
 };
 
 TaskEvents read_events(const std::string& events) {
@@ -217,8 +224,14 @@ TaskEvents read_events(const std::string& events) {
             result.resets.push_back(detail);
         else if (status == "witness-unavailable")
             result.witness_unavailable.insert_or_assign(index, detail);
+        else if (status == "primary-complete")
+            result.primary_complete = true;
         else if (status == "pending" && index == properties.size())
             properties.push_back({detail, status, {}});
+        else if (status == "vacuity")
+            properties.at(index).vacuity = detail;
+        else if (status == "antecedent")
+            properties.at(index).has_antecedent = true;
         else {
             auto& property = properties.at(index);
             property.status = status;
@@ -260,7 +273,7 @@ public:
             ::close(fd);
             throw std::system_error(reason, std::generic_category(), "open " + path);
         }
-        append("stage\tproperty\tinstance\tstatus\tdetail\n");
+        append("stage\tproperty\tinstance\tstatus\tdetail\tvacuity\n");
         std::cout << "  progress  " << path << std::endl;
     }
 
@@ -268,7 +281,7 @@ public:
 
     void record(std::string_view stage, const Property& p, std::string_view instance = {}) {
         std::string row;
-        const std::string_view fields[] = {stage, p.name, instance, p.status, p.detail};
+        const std::string_view fields[] = {stage, p.name, instance, p.status, p.detail, p.vacuity_value()};
         for (auto field : fields) {
             for (char c : field) {
                 switch (c) {
@@ -539,9 +552,15 @@ std::string last_diagnostic(const fs::path& file) {
     return latest;
 }
 
+struct LocalVacuity {
+    front::Task task;
+    fs::path directory;
+};
+
 struct VevalResult {
     std::vector<Property> lines;   // one per assertion veval saw, in source order
     std::set<std::string> decided; // conclusive local verdicts
+    std::map<std::string, LocalVacuity> vacuity;
     bool failed = false, timed_out = false;
 };
 
@@ -690,7 +709,7 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
         local.smart = {front::ToolUse::off, {}};
         local.veval = {front::ToolUse::off, {}};
         std::string local_events;
-        const auto wait = run_worker(local, dir, deadline, local_events, EngineRun::solve);
+        const auto wait = run_worker(local, dir, deadline, local_events, EngineRun::solve_primary);
         const auto checked = read_events(local_events);
         std::string status = "error", detail = "EBMC returned no result";
         if (checked.properties.size() == 1 && checked.properties.front().status != "pending") {
@@ -698,31 +717,21 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             detail = checked.properties.front().detail;
         }
         const auto context = without(job.instance);
-        if (wait.timedOut) {
+        const bool has_result = status == "proved" || status == "passed" || status == "refuted";
+        if (wait.timedOut && !has_result) {
             result.timed_out = true;
-            if (status == "checking") {
-                detail += "; vacuity check timed out";
-                notes[job.property].push_back(job.instance + ": " + detail);
-            } else detail = timeout;
-            progress.record("local", {job.property, "unknown", detail + context}, job.instance);
+            progress.record("local", {job.property, "unknown", timeout + context}, job.instance);
             break;
         }
-        if (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0) {
-            if (status == "checking") {
-                status = "unknown";
-                detail += "; vacuity check failed: " + last_diagnostic(dir / "diagnostics.log");
-            } else {
-                status = "error";
-                detail = "EBMC failed: " + last_diagnostic(dir / "diagnostics.log");
-            }
+        if (!has_result && (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0)) {
+            status = "error";
+            detail = "EBMC failed: " + last_diagnostic(dir / "diagnostics.log");
         }
         if (status == "proved") {
             decided[job.property] = {job.property, "proved", "proved in " + job.instance + " (veval)" + context};
         } else if (status == "passed") {
             decided[job.property] = {job.property, "passed",
                                      "passed in " + job.instance + " (veval), " + detail + context};
-        } else if (status == "vacuous") {
-            decided[job.property] = {job.property, status, detail + " in " + job.instance + " (veval)" + context};
         } else if (status == "refuted") {
             const auto wave = task_output_dir(task) / "veval" / file_name(job.property) / (file_name(job.instance) + ".vcd");
             if (!detail.empty()) {
@@ -739,15 +748,13 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
             if (!parent.empty()) enqueue(std::stoul(parent));
         } else {
             notes[job.property].push_back(job.instance + ": no local conclusion (" + detail + ")" + context);
-            if (status == "checking") {
-                status = "unknown";
-                detail += "; vacuity check returned no result";
-            }
             detail += context;
         }
         if (const auto found = decided.find(job.property); found != decided.end()) {
             progress.record("local", found->second, job.instance);
-            progress.record("final", found->second);
+            if (checked.properties.front().has_antecedent)
+                result.vacuity.emplace(job.property, LocalVacuity{std::move(local), dir});
+            else progress.record("final", found->second);
         } else {
             progress.record("local", {job.property, status, detail}, job.instance);
         }
@@ -774,17 +781,42 @@ VevalResult run_veval(const front::Task& task, const fs::path& scratch, Clock::t
     return result;
 }
 
+void finish_local_vacuity(VevalResult& result, Deadline deadline, TaskProgress& progress) {
+    for (auto& line : result.lines) {
+        const auto found = result.vacuity.find(line.name);
+        if (found == result.vacuity.end()) continue;
+        if (Clock::now() < deadline) {
+            const auto& job = found->second;
+            std::string events;
+            try {
+                const auto directory = job.directory / "vacuity";
+                fs::create_directories(directory);
+                run_worker(job.task, directory, deadline, events, EngineRun::vacuity);
+            } catch (const std::exception& error) {
+                std::cerr << "crisp: warning: vacuity query failed for " << line.name << ": " << error.what() << '\n';
+            }
+            auto checked = read_events(events);
+            if (checked.properties.size() == 1) line.vacuity = checked.properties.front().vacuity;
+        }
+        progress.record("final", line);
+    }
+}
+
 void print_line(const Property& p, Summary& summary, Clock::time_point start) {
     if (p.status == "proved") ++summary.proved;
     else if (p.status == "passed") ++summary.passed;
     else if (p.status == "refuted") ++summary.refuted;
-    else if (p.status == "vacuous") ++summary.vacuous;
     else ++summary.unknown;
+    const auto vacuity = p.vacuity_value();
+    if (vacuity == "triggered") ++summary.triggered;
+    else if (vacuity == "never triggered") ++summary.never_triggered;
+    else if (vacuity.rfind("not triggered within ", 0) == 0) ++summary.not_triggered;
+    else ++summary.unchecked;
     const std::chrono::duration<double> elapsed = Clock::now() - start;
     std::cout << "  " << p.name << "  " << p.status << "  " << std::fixed << std::setprecision(3) << elapsed.count()
               << " s";
     if (!p.detail.empty()) std::cout << "  " << p.detail;
-    std::cout << '\n';
+    std::cout << "  " << vacuity << '\n';
 }
 } // namespace
 
@@ -881,27 +913,25 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     }
     const auto timeout = "timeout after " + std::to_string(seconds) + " s";
     // veval on / only (spec 25).
-    std::set<std::string> decided;
+    VevalResult local;
     if (task.veval.value != front::ToolUse::off) {
-        auto result = run_veval(task, scratch.path, deadline, timeout, progress);
-        if (result.failed) {
+        local = run_veval(task, scratch.path, deadline, timeout, progress);
+        if (local.failed) {
             summary.error = true;
             std::cerr << "crisp: veval could not lower the design\n";
             std::ifstream log(scratch.path / "diagnostics.log");
             if (log.peek() != std::ifstream::traits_type::eof()) std::cerr << log.rdbuf();
             return;
         }
-        const bool only = task.veval.value == front::ToolUse::only;
-        for (const auto& line : result.lines)
-            if (only || result.decided.count(line.name)) print_line(line, summary, start);
-        if (only) {
-            if (result.lines.empty()) {
+        if (task.veval.value == front::ToolUse::only) {
+            finish_local_vacuity(local, deadline, progress);
+            for (const auto& line : local.lines) print_line(line, summary, start);
+            if (local.lines.empty()) {
                 summary.incomplete = true;
                 std::cout << "  no assertions\n";
             }
             return;
         }
-        decided = std::move(result.decided); // the whole design checks the rest
     }
     const auto wait = [&] {
         if (task.smart.value == front::ToolUse::on) {
@@ -915,7 +945,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
             mine(task, scratch.path, deadline);
         }
         const auto operation = lasso_json_enabled() ? EngineRun::solve_with_lasso : EngineRun::solve;
-        return run_worker(task, scratch.path, deadline, events, operation, decided);
+        return run_worker(task, scratch.path, deadline, events, operation, local.decided);
     }();
     auto reports = read_events(events);
     const bool reject_undriven = task.undriven.value == front::Undriven::error;
@@ -928,21 +958,18 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     }
     auto& properties = reports.properties;
     bool diagnostics = failed;
-    const bool checking = std::any_of(properties.begin(), properties.end(),
-                                      [](const auto& p) { return p.status == "checking"; });
     if (failed) {
-        if (!checking) summary.error = true;
-        if (!wait.timedOut && WIFSIGNALED(wait.status))
+        if (!reports.primary_complete) summary.error = true;
+        if (WIFSIGNALED(wait.status))
             std::cerr << "crisp: EBMC terminated by signal " << WTERMSIG(wait.status) << '\n';
     }
-    if (properties.empty() && !failed && decided.empty()) {
+    if (properties.empty() && !failed && local.decided.empty()) {
         summary.incomplete = true;
         std::cout << (wait.timedOut ? "  unknown  " + timeout + " before assertion discovery\n" : "  no assertions\n");
     }
     for (std::size_t i = 0; i < properties.size(); ++i) {
         auto& p = properties[i];
-        // A checking event carries the original proof. The parent settles it
-        // below after waiting. Discovery alone carries no assertion result.
+        // Discovery alone carries no assertion result.
         const bool reported = p.status != "pending";
         if (p.status == "refuted" && p.detail.empty()) {
             auto dest = wave_path(task, p.name);
@@ -970,13 +997,6 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
                 }
             } else { p.status = "unknown"; p.detail = timeout; }
         }
-        if (p.status == "checking") {
-            p.status = "unknown";
-            if (wait.timedOut) p.detail += "; vacuity check timed out";
-            else if (WIFSIGNALED(wait.status))
-                p.detail += "; vacuity check terminated by signal " + std::to_string(WTERMSIG(wait.status));
-            else p.detail += "; vacuity check failed";
-        }
         if (p.status == "pending") {
             p.status = wait.timedOut || failed ? "unknown" : "error";
             p.detail = wait.timedOut ? timeout : "EBMC returned no result";
@@ -994,5 +1014,8 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         if (log.peek() != std::ifstream::traits_type::eof()) std::cerr << log.rdbuf();
         else if (failed && !rejected) std::cerr << "crisp: EBMC failed during verification\n";
     }
+    finish_local_vacuity(local, deadline, progress);
+    for (const auto& line : local.lines)
+        if (local.decided.count(line.name)) print_line(line, summary, start);
 }
 } // namespace crisp::check

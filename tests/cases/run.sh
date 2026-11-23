@@ -62,6 +62,21 @@ progress_file() {
     sed -n 's/^  progress  //p' out
 }
 
+has_vacuity() {
+    local property=$1 verdict=$2 state=$3
+    if ! awk -v property="$property" -v verdict="$verdict" -v state="$state" '
+        $1 == property && $2 == verdict && substr($0, length($0) - length(state) - 1) == "  " state { found++ }
+        END { exit found != 1 }
+    ' out || ! awk -F '\t' -v property="$property" -v verdict="$verdict" -v state="$state" '
+        $1 == "final" && $2 == property && $4 == verdict && $6 == state { found++ }
+        END { exit found != 1 }
+    ' "$(progress_file)"; then
+        cat out err "$(progress_file)" >&2
+        echo "missing verdict/vacuity for $property: $verdict / $state" >&2
+        exit 1
+    fi
+}
+
 valid_vcd() {
     awk '
         $1 == "$scope" {depth++}
@@ -79,14 +94,14 @@ run 0 token prove
 has 'token_formal.p_no_conflict  proved'
 journal=$(progress_file)
 [[ $journal == crisp-out/token_prove/progress-*.tsv ]]
-grep -Fxq $'final\ttoken_formal.p_no_conflict\t\tproved\t' "$journal"
+grep -Fxq $'final\ttoken_formal.p_no_conflict\t\tproved\t\tunchecked' "$journal"
 run 3 token induction
 has 'token_formal.p_no_conflict  unknown'
 has 'k-induction inconclusive at depth 5'
 run 0 token bounded
 has 'token_formal.p_no_conflict  passed'
 has 'bmc depth 10'
-has '1 task, 0 proved, 1 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '1 task, 0 proved, 1 passed, 0 refuted, 0 unknown'
 
 wave=crisp-out/token_bug/token_formal.p_no_conflict.vcd
 mkdir -p "$(dirname "$wave")"
@@ -107,8 +122,8 @@ run 1 counter ic3
 has 'counter.p_range  refuted'
 has 'counter.p_stop  proved'
 journal=$(progress_file)
-grep -Fxq $'final\tcounter.p_range\t\trefuted\tcrisp-out/counter_ic3/counter.p_range.vcd' "$journal"
-grep -Fxq $'final\tcounter.p_stop\t\tproved\t' "$journal"
+grep -Fxq $'final\tcounter.p_range\t\trefuted\tcrisp-out/counter_ic3/counter.p_range.vcd\ttriggered' "$journal"
+grep -Fxq $'final\tcounter.p_stop\t\tproved\t\tunchecked' "$journal"
 valid_vcd crisp-out/counter_ic3/counter.p_range.vcd
 
 run 0 reset with_reset
@@ -155,7 +170,7 @@ rejected_reset() {
     run 2 reset-invalid "$task"
     has "$invalid:$line: $message" err
     [[ $(wc -l < err) == 1 ]]
-    has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+    has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 }
 rejected_reset register 15 "reset 'busy' is a register, not an input of top"
 rejected_reset wire 18 "reset 'internal' is an internal signal, not an input of top"
@@ -166,7 +181,7 @@ rejected_reset missing 26 "reset 'absent' does not exist in top"
 rejected_reset missing_default 27 "reset 'absent' does not exist in any top-level module"
 run 2 reset-invalid register valid
 has "$invalid:15: reset 'busy' is a register" err
-has '2 tasks, 0 proved, 0 passed, 1 refuted, 0 vacuous, 0 unknown'
+has '2 tasks, 0 proved, 0 passed, 1 refuted, 0 unknown'
 
 # An explicit SMART run also gets the source-located error before it can
 # consume the invalid reset, even if no SMART executable is installed.
@@ -175,7 +190,7 @@ status=0
 CRISP_SMART="$work/missing-smart" "$root/build/crisp" smart-reset.salt >out 2>err || status=$?
 [[ $status == 2 && $(wc -l < err) == 1 ]]
 has "smart-reset.salt:4: reset 'busy' is a register" err
-has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 
 for name in 'u_core.rst' 'rst==0'; do
     printf '[files]\n%s\n[design]\nreset %s low\n' "$root/tests/cases/reset-high.sv" "$name" > invalid-name.salt
@@ -189,11 +204,11 @@ done
 run 3 token prove induction
 has 'token_formal.p_no_conflict  proved'
 has 'token_formal.p_no_conflict  unknown'
-has '2 tasks, 1 proved, 0 passed, 0 refuted, 0 vacuous, 1 unknown'
+has '2 tasks, 1 proved, 0 passed, 0 refuted, 1 unknown'
 run 0 token prove bounded
 has 'token_formal.p_no_conflict  proved'
 has 'token_formal.p_no_conflict  passed'
-has '2 tasks, 1 proved, 1 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '2 tasks, 1 proved, 1 passed, 0 refuted, 0 unknown'
 
 run 3 empty
 has 'no assertions'
@@ -206,7 +221,7 @@ has '$scope module ebmc $end' "$wave"
 has '$comment finite witness with proved total extension $end' "$wave"
 has '1!' "$wave"
 run 1 bdd-witness
-has '2 refuted, 0 vacuous, 0 unknown'
+has '2 refuted, 0 unknown'
 wave=crisp-out/bdd-witness/ctl_witness.eventually_finishes.vcd
 valid_vcd "$wave"
 has '$comment witness loop ' "$wave"
@@ -224,13 +239,13 @@ has 'param WIDTH is not supported' err
 run 0 bmc-passed bmc
 has 'bmc_passed.p_below_limit  passed'
 has 'bmc depth 10'
-has '1 task, 0 proved, 1 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '1 task, 0 proved, 1 passed, 0 refuted, 0 unknown'
 run 3 bmc-passed kind
 has 'bmc_passed.p_below_limit  unknown'
 has 'k-induction inconclusive at depth 5'
-has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 1 unknown'
+has '1 task, 0 proved, 0 passed, 0 refuted, 1 unknown'
 run 3 bmc-passed
-has '2 tasks, 0 proved, 1 passed, 0 refuted, 0 vacuous, 1 unknown'
+has '2 tasks, 0 proved, 1 passed, 0 refuted, 1 unknown'
 
 for task in hold sequence; do
     run 0 undriven-value "$task"
@@ -247,7 +262,7 @@ if grep -Fq 'crisp: warning:' err; then
     echo 'undriven error emitted a warning' >&2
     exit 1
 fi
-has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 if grep -Fq 'undriven_value.p_nonzero' out; then
     cat out err >&2
     echo 'undriven error started verification' >&2
@@ -255,7 +270,7 @@ if grep -Fq 'undriven_value.p_nonzero' out; then
 fi
 
 run 2 undriven-value hold reject
-has '2 tasks, 1 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '2 tasks, 1 proved, 0 passed, 0 refuted, 0 unknown'
 has 'crisp: warning: [hold] undriven undriven_value.en at ' err
 has 'crisp: error: [reject] undriven undriven_value.en at ' err
 [[ $(grep -c '^crisp: warning: \[hold\] undriven ' err) == 2 ]]
@@ -270,7 +285,7 @@ has 'undriven_temporal.p_stable  refuted'
 has 'crisp: warning: undriven undriven_temporal.en at ' err
 
 run 0 undriven-clean
-has '3 tasks, 3 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '3 tasks, 3 proved, 0 passed, 0 refuted, 0 unknown'
 [[ ! -s err ]]
 
 # Spec 20: properties PATTERN selects the assertions that are checked.
@@ -289,7 +304,7 @@ selected() {
     local task=$1
     shift
     reported 0 "$task" passed "$@"
-    has "1 task, 0 proved, $# passed, 0 refuted, 0 vacuous, 0 unknown"
+    has "1 task, 0 proved, $# passed, 0 refuted, 0 unknown"
 }
 selected one top.p_one
 has '  properties  top.p_one'
@@ -310,7 +325,7 @@ timeout 11 "$root/build/crisp" unassumed.salt >out 2>err || status=$?
 [[ $status == 1 ]]
 has 'top.p_still  refuted'
 reported 0 pdr proved top.p_one top.p_two top.p_still
-has '1 task, 3 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '1 task, 3 proved, 0 passed, 0 refuted, 0 unknown'
 
 # Preserve temporal assumptions, target names, and independent PDR witnesses.
 for mode in kind pdr; do
@@ -324,7 +339,7 @@ run 1 buechi multi_pdr
 has 'buechi.p_quiet  proved'
 has 'buechi.p_next  refuted'
 has 'buechi.p_later  refuted'
-has '1 task, 1 proved, 0 passed, 2 refuted, 0 vacuous, 0 unknown'
+has '1 task, 1 proved, 0 passed, 2 refuted, 0 unknown'
 for case in 'p_next 1' 'p_later 0'; do
     read -r target choose_next <<< "$case"
     wave="crisp-out/buechi_multi_pdr/buechi.$target.vcd"
@@ -364,8 +379,8 @@ run 3 terminal-obligation one_locked_word_bmc
 has 'tail.unreachable  unknown'
 has 'tail.match_trip  passed'
 journal=$(progress_file)
-grep -Fxq $'final\ttail.unreachable\t\tunknown\tEBMC: INCONCLUSIVE' "$journal"
-grep -Fxq $'final\ttail.match_trip\t\tpassed\tbmc depth 10' "$journal"
+grep -Fxq $'final\ttail.unreachable\t\tunknown\tEBMC: INCONCLUSIVE\tunchecked' "$journal"
+grep -Fxq $'final\ttail.match_trip\t\tpassed\tbmc depth 10\ttriggered' "$journal"
 [[ ! -e crisp-out/terminal-obligation_one_locked_word_bmc/tail.unreachable.vcd ]]
 run 1 terminal-obligation one_allowed_word_bmc
 has 'tail.unreachable  refuted'
@@ -374,25 +389,21 @@ wave=crisp-out/terminal-obligation_one_allowed_word_bmc/tail.unreachable.vcd
 valid_vcd "$wave"
 awk -v fixture=terminal -v require_certificate=1 -v delay=1 -v bound=10 -f "$root/tests/cases/check-witness.awk" "$wave"
 journal=$(progress_file)
-grep -Fxq $'final\ttail.unreachable\t\trefuted\t'"$wave" "$journal"
-grep -Fxq $'final\ttail.match_trip\t\tpassed\tbmc depth 10' "$journal"
+grep -Fxq $'final\ttail.unreachable\t\trefuted\t'"$wave"$'\ttriggered' "$journal"
+grep -Fxq $'final\ttail.match_trip\t\tpassed\tbmc depth 10\ttriggered' "$journal"
 
-# The temporal assumption blocks a two-sample antecedent. Both proof batches
-# need the same assumption, including after lowering into a child instance.
+# Keep the same assumption through both queries, including at a veval landing.
 for mode in kind pdr local_kind local_pdr; do
-    run 3 vacuity-buechi "$mode"
-    has 'vacuity_monitor.leaf.blocked  vacuous'
-    has 'vacuity_monitor.leaf.captured  vacuous'
-    has 'vacuity_monitor.leaf.allowed  proved'
-    has '1 task, 1 proved, 0 passed, 0 refuted, 2 vacuous, 0 unknown'
-    if [[ $mode == local_* ]]; then
-        has 'antecedent proved unreachable in vacuity_monitor.leaf (veval)'
-    fi
+    run 0 vacuity-buechi "$mode"
+    has_vacuity vacuity_monitor.leaf.blocked proved 'never triggered'
+    has_vacuity vacuity_monitor.leaf.captured proved 'never triggered'
+    has_vacuity vacuity_monitor.leaf.allowed proved triggered
+    has '1 task, 3 proved, 0 passed, 0 refuted, 0 unknown; vacuity: 1 triggered, 0 not triggered, 2 never triggered, 0 unchecked'
     run 0 vacuity-buechi "free_$mode"
-    has '1 task, 3 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+    has '1 task, 3 proved, 0 passed, 0 refuted, 0 unknown; vacuity: 3 triggered, 0 not triggered, 0 never triggered, 0 unchecked'
 done
 run 1 vacuity-buechi multi
-has '1 task, 1 proved, 0 passed, 2 refuted, 2 vacuous, 0 unknown'
+has '1 task, 3 proved, 0 passed, 2 refuted, 0 unknown; vacuity: 3 triggered, 0 not triggered, 2 never triggered, 0 unchecked'
 for case in 'next_bad 1' 'later_bad 2'; do
     read -r target delay <<< "$case"
     wave="crisp-out/vacuity-buechi_multi/vacuity_monitor.$target.vcd"
@@ -406,7 +417,7 @@ for unmatched in 'nomatch 34 top.absent*' 'dot 35 top?p_one' 'literal_miss 39 to
     reported 2 "$task" -
     has "$properties:$line: [options] properties: pattern '$pattern' matches no assertion" err
     [[ $(wc -l < err) == 1 ]]
-    has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+    has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 done
 
 while read -r task expected; do
@@ -436,7 +447,7 @@ status=0
 timeout 11 "$root/build/crisp" merged.salt >out 2>err || status=$?
 [[ $status == 0 ]]
 has '  properties  top.p_two  top.p_one'
-has '2 tasks, 0 proved, 3 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '2 tasks, 0 proved, 3 passed, 0 refuted, 0 unknown'
 
 # Spec 19: level word uses EBMC's word-level SMT with yices.
 marker=$(mktemp "$work/marker.XXXXXXXX")
@@ -534,7 +545,7 @@ for case in 'bool bool_memory.p_written bool_memory.p_equal' 'grid grid.p_kept g
         echo "yices-unsupported ${task}_word: expected no verdict" >&2
         exit 1
     fi
-    has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 2 unknown'
+    has '1 task, 0 proved, 0 passed, 0 refuted, 2 unknown'
     run 1 yices-unsupported "${task}_auto"
     has "$holds  passed"
     has "$fails  refuted"
@@ -547,7 +558,7 @@ timeout 11 env PATH="$work/no-yices" "$root/build/crisp" "$root/tests/cases/leve
 [[ $status == 2 ]]
 has "crisp: $root/tests/cases/level-word.salt:26: [options] level word: yices-smt2 not found in PATH; install yices or add its directory to PATH" err
 [[ $(wc -l < err) == 1 ]]
-has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 # Spec 23: rtl-mode strict runs slang first; its errors stop the task, relaxed skips it.
 rtl="$root/tests/cases/rtl-mode.salt"
 rejected_rtl() {
@@ -555,12 +566,12 @@ rejected_rtl() {
     run 2 rtl-mode "$task"
     [[ $(head -n 1 err) == "crisp: $rtl:$line: strict RTL check failed (slang); write rtl-mode relaxed to skip it" ]]
     has "$diagnostic" err
-    if grep -Eq '  (proved|passed|refuted|vacuous|unknown)  ' out; then
+    if grep -Eq '  (proved|passed|refuted|unknown)  ' out; then
         cat out err >&2
         echo "rtl-mode $task: the strict check did not stop the task" >&2
         exit 1
     fi
-    has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+    has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 }
 rejected_rtl before 2 "rtl-before.sv:3:30: error: identifier 'q' used before its declaration"
 rejected_rtl enum 4 'rtl-enum.sv:3:39: error: expression width of 4 does not exactly match declared enum type width of 3'
@@ -584,7 +595,7 @@ has 'legal.p_known  passed'
 run 2 rtl-mode before before_relaxed
 has "crisp: $rtl:2: strict RTL check failed (slang)" err
 has 'use_before_declaration.p_follows  passed'
-has '2 tasks, 0 proved, 1 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '2 tasks, 0 proved, 1 passed, 0 refuted, 0 unknown'
 # Without slang, strict tasks stop and relaxed tasks run.
 status=0
 CRISP_SLANG="$work/no-slang" timeout 11 "$root/build/crisp" "$rtl" legal before_relaxed >out 2>err || status=$?
@@ -592,62 +603,63 @@ CRISP_SLANG="$work/no-slang" timeout 11 "$root/build/crisp" "$rtl" legal before_
 has "crisp: $rtl:9: rtl-mode strict: slang not found at $work/no-slang. Run 'make slang' or set CRISP_SLANG" err
 [[ $(wc -l < err) == 1 ]]
 has 'use_before_declaration.p_follows  passed'
-has '2 tasks, 0 proved, 1 passed, 0 refuted, 0 vacuous, 0 unknown'
-# Spec 21. Each query uses the same reset, assumptions and bound as its assertion.
+has '2 tasks, 0 proved, 1 passed, 0 refuted, 0 unknown'
+# Spec 21. The original verdict and the antecedent diagnostic are independent.
 for mode in bounded word bit induction pdr bdd auto; do
-    run 3 vacuity "$mode"
+    run 0 vacuity "$mode"
     case "$mode" in
-        bounded|word|bit) success=passed; why='antecedent not reached within depth 3' ;;
-        *) success=proved; why='antecedent proved unreachable' ;;
+        bounded|word|bit) success=passed; state='not triggered within 3' ;;
+        *) success=proved; state='never triggered' ;;
     esac
     for name in never disabled assumed_out bool_dead; do
-        grep -E "vacuity.basic_${name}  vacuous  .*  $why$" out >/dev/null
+        has_vacuity "vacuity.basic_$name" "$success" "$state"
     done
-    grep -E 'vacuity.basic_constant_false  vacuous  .*  antecedent is constant false$' out >/dev/null
-    for name in ordinary live bool_live; do has "vacuity.basic_$name  $success"; done
+    has_vacuity vacuity.basic_constant_false "$success" 'never triggered'
+    has_vacuity vacuity.basic_ordinary "$success" unchecked
+    for name in live bool_live; do has_vacuity "vacuity.basic_$name" "$success" triggered; done
     if [[ $mode == bounded || $mode == word ]]; then
-        has 'vacuity.next_dead  vacuous'
-        has 'vacuity.next_live  passed'
-        has 'vacuity.chained  passed'
-        has '1 task, 0 proved, 5 passed, 0 refuted, 6 vacuous, 0 unknown'
+        has_vacuity vacuity.next_dead passed 'not triggered within 3'
+        has_vacuity vacuity.next_live passed triggered
+        has_vacuity vacuity.chained passed triggered
+        has '1 task, 0 proved, 11 passed, 0 refuted, 0 unknown; vacuity: 4 triggered, 5 not triggered, 1 never triggered, 1 unchecked'
     fi
 done
-run 3 vacuity late3
-has 'vacuity.late  vacuous'
+run 0 vacuity late3
+has_vacuity vacuity.late passed 'not triggered within 3'
 run 0 vacuity late8
-has 'vacuity.late  passed'
+has_vacuity vacuity.late passed triggered
 run 0 vacuity late_pdr
-has 'vacuity.late  proved'
+has_vacuity vacuity.late proved triggered
 run 0 vacuity pdr30
-has 'sampled.after30  proved'
+has_vacuity sampled.after30 proved triggered
 run 1 vacuity refute
-has 'vacuity.wrong  refuted'
+has_vacuity vacuity.wrong refuted triggered
 valid_vcd crisp-out/vacuity_refute/vacuity.wrong.vcd
-run 3 vacuity sequence
-has 'vacuity.double_reset  vacuous'
-has 'vacuity.last_sample  passed'
+run 0 vacuity sequence
+has_vacuity vacuity.double_reset passed 'not triggered within 3'
+has_vacuity vacuity.last_sample passed triggered
 for mode in local also_top; do
-    run 3 vacuity-local "$mode"
-    has 'guarded_top.child.overlap  vacuous'
-    has 'guarded_top.child.next_cycle  vacuous'
-    has 'guarded_top.child.boolean_arrow  vacuous'
-    has 'guarded_top.child.captured  vacuous'
-    has 'antecedent not reached within depth 3 in guarded_top.child (veval)'
+    run 0 vacuity-local "$mode"
+    for name in overlap next_cycle boolean_arrow captured; do
+        has_vacuity "guarded_top.child.$name" passed 'not triggered within 3'
+    done
     journal=$(progress_file)
-    grep -Fq $'local\tguarded_top.child.overlap\tguarded_top.child\tvacuous\t' "$journal"
-    grep -Fq $'final\tguarded_top.child.overlap\t\tvacuous\t' "$journal"
+    grep -Fxq $'local\tguarded_top.child.overlap\tguarded_top.child\tpassed\tpassed in guarded_top.child (veval), bmc depth 3\tunchecked' "$journal"
 done
 
-# The first solver call checks the original assertion. A later error or
-# timeout must retain its bounded verdict in the reason and return code 3.
+# Inject an error or a timeout after the primary assertion has passed.
 mkdir -p vacuity-solver
 export REAL_YICES=$(command -v yices-smt2) VACUITY_MARKER="$work/vacuity-called"
 cat > vacuity-solver/yices-smt2 <<'SOLVER'
 #!/usr/bin/env bash
-if [[ ! -f $VACUITY_MARKER ]]; then
-    touch "$VACUITY_MARKER"
-    exec "$REAL_YICES" "$@"
-fi
+case "$PWD" in
+    */veval/check*/vacuity/tmp.*) touch "$VACUITY_MARKER" ;;
+    */veval/check*/tmp.*) exec "$REAL_YICES" "$@" ;;
+    *) if [[ ! -f $VACUITY_MARKER ]]; then
+           touch "$VACUITY_MARKER"
+           exec "$REAL_YICES" "$@"
+       fi ;;
+esac
 if [[ $VACUITY_FAULT == timeout ]]; then sleep 8; fi
 exit 1
 SOLVER
@@ -656,60 +668,35 @@ printf '[files]\n%s\n[design]\ntop vacuity\nreset rst high\n[options]\nmode bmc\
     "$root/tests/cases/vacuity.sv" > vacuity-fault.salt
 for fault in error timeout; do
     rm -f "$VACUITY_MARKER"
-    status=0
     VACUITY_FAULT=$fault PATH="$work/vacuity-solver:$PATH" timeout 11 \
-        "$root/build/crisp" vacuity-fault.salt >out 2>err || status=$?
-    [[ $status == 3 ]]
-    has 'vacuity.late  unknown'
-    has 'passed; vacuity check'
-    if [[ $fault == timeout ]]; then has 'vacuity check timed out'; fi
-    reason=$(sed -n 's/^  vacuity.late  unknown  [0-9.]* s  //p' out)
-    journal=$(progress_file)
-    [[ $(wc -l < "$journal") == 2 ]]
-    grep -Fxq $'final\tvacuity.late\t\tunknown\t'"$reason" "$journal"
+        "$root/build/crisp" vacuity-fault.salt >out 2>err
+    has_vacuity vacuity.late passed unchecked
+    [[ $(wc -l < "$(progress_file)") == 2 ]]
 done
 
-# Time out during the first local vacuity check. Only mode settles that
-# assertion, while on mode still needs a whole-design result.
+# All local primary checks finish before the first auxiliary check times out.
 for mode in only on; do
     sed -e 's@/vacuity.sv$@/vacuity-local.sv@' -e 's/top vacuity/top guarded_top/' \
         -e '/reset rst high/d' -e "s/properties vacuity.late/veval $mode/" vacuity-fault.salt > local-fault.salt
     rm -f "$VACUITY_MARKER"
-    status=0
     VACUITY_FAULT=timeout PATH="$work/vacuity-solver:$PATH" timeout 11 \
-        "$root/build/crisp" local-fault.salt >out 2>err || status=$?
-    [[ $status == 3 ]]
-    prop=guarded_top.child.boolean_arrow
-    journal=$(progress_file)
-    grep -Fxq $'local\t'"$prop"$'\tguarded_top.child\tunknown\tpassed; vacuity check timed out' "$journal"
-    if [[ $mode == only ]]; then
-        reason=$(sed -n "s/^  $prop  unknown  [0-9.]* s  //p" out)
-        [[ $reason == *'passed; vacuity check timed out' && $(wc -l < "$journal") == 3 ]]
-        grep -Fxq $'final\t'"$prop"$'\t\tunknown\t'"$reason" "$journal"
-    else
-        [[ $(wc -l < "$journal") == 2 ]]
-    fi
+        "$root/build/crisp" local-fault.salt >out 2>err
+    [[ -e $VACUITY_MARKER ]]
+    for name in overlap next_cycle boolean_arrow captured; do
+        has_vacuity "guarded_top.child.$name" passed unchecked
+    done
+    has '1 task, 0 proved, 4 passed, 0 refuted, 0 unknown; vacuity: 0 triggered, 0 not triggered, 0 never triggered, 4 unchecked'
 done
 
-check_unbounded_exclusion() {
-    if grep -Fq "$1  vacuous" out; then
-        has 'antecedent proved unreachable'
-    else
-        has "$1  unknown"
-        grep -Eq 'proved; vacuity check: (INCONCLUSIVE|finite counterexample has no certified infinite extension)' out
-    fi
-}
-
-# trip on the last sample satisfies both assumptions through the bound, but
-# cannot be extended through the next sample while !alarm remains in effect.
+# A complete match at the end of a finite prefix does not need an extension.
 for mode in kind pdr; do
-    run 3 vacuity-tail1 "$mode"
-    check_unbounded_exclusion tail.match_trip
+    run 0 vacuity-tail1 "$mode"
+    has_vacuity tail.match_trip proved triggered
     run 0 vacuity-tail1 "open_$mode"
-    has 'tail.match_trip  proved'
+    has_vacuity tail.match_trip proved triggered
 done
 run 0 vacuity-tail1 bounded
-has 'tail.match_trip  passed'
+has_vacuity tail.match_trip passed triggered
 has 'bmc depth 10'
 
 # Share the finite unwind with the antecedent of match_trip. The original
@@ -749,42 +736,38 @@ SALT
     done
 done
 
-# The finite prefix may place trip at the boundary. For either unbounded
-# engine a legal extension must also satisfy the obligation eight ticks later.
+# The finite prefix can match trip before the later obligation is due.
 for mode in kind pdr; do
-    run 3 vacuity-shallow "closed_$mode"
-    check_unbounded_exclusion shallow.outstanding
+    run 0 vacuity-shallow "closed_$mode"
+    has_vacuity shallow.outstanding proved triggered
     run 0 vacuity-shallow "open_$mode"
-    has 'shallow.outstanding  proved'
+    has_vacuity shallow.outstanding proved triggered
 done
 run 0 vacuity-shallow finite
-has 'shallow.outstanding  passed'
+has_vacuity shallow.outstanding passed triggered
 
-# A four-cycle witness discharges early only. At cycle 30 the same design
-# still needs the original unbounded engine.
-run 3 vacuity-shallow multi
-has '1 task, 2 proved, 0 passed, 0 refuted, 1 vacuous, 0 unknown'
-has 'shallow.early  proved'
-has 'shallow.late  proved'
-has 'shallow.excluded  vacuous'
+# A four-cycle witness classifies early. At cycle 30 the same design still
+# needs the unbounded auxiliary query.
+run 0 vacuity-shallow multi
+has '1 task, 3 proved, 0 passed, 0 refuted, 0 unknown; vacuity: 2 triggered, 0 not triggered, 1 never triggered, 0 unchecked'
+has_vacuity shallow.early proved triggered
+has_vacuity shallow.late proved triggered
+has_vacuity shallow.excluded proved 'never triggered'
 run 0 vacuity-shallow pdr30
-has 'shallow.late  proved'
-run 3 vacuity-shallow bounded4
-has 'antecedent not reached within depth 4'
+has_vacuity shallow.late proved triggered
+run 0 vacuity-shallow bounded4
+has_vacuity shallow.late passed 'not triggered within 4'
 for mode in kind pdr; do
     run 0 vacuity-shallow "long_$mode"
-    has 'longloop.hit  proved'
+    has_vacuity longloop.hit proved triggered
 done
 
-# A 1200-tick startup exceeds both the shallow window and a short suffix
-# search. BDD's totality certificate belongs to early alone. An active
-# conflicting assumption excludes that same match in the second run.
-run 3 vacuity-total open
-has 'total.early  proved'
-has 'total.never  vacuous'
-run 3 vacuity-total locked
-has 'total.early  vacuous'
-has 'total.never  vacuous'
+run 0 vacuity-total open
+has_vacuity total.early proved triggered
+has_vacuity total.never proved 'never triggered'
+run 0 vacuity-total locked
+has_vacuity total.early proved 'never triggered'
+has_vacuity total.never proved 'never triggered'
 
 # kind uses its native solver. The shallow witness search uses Yices.
 # Let Yices answer the first shallow query, then hang the second. In the second
@@ -826,45 +809,34 @@ fi
 exec "$REAL_SPOT" "$@"
 SPOT
 chmod +x shallow-tools/{ltl2tgba,yices-smt2}
-for fallback in normal error; do
-    rm -f "$SHALLOW_MARKER.first" "$SHALLOW_MARKER.stalled"
-    FALLBACK=$fallback PATH="$work/shallow-tools:$PATH" run 3 vacuity-shallow multi
-    [[ -s $SHALLOW_MARKER.stalled && ! -e /proc/$(cat "$SHALLOW_MARKER.stalled")/exe ]]
-    has 'shallow.early  proved'
-    if [[ $fallback == normal ]]; then
-        has '1 task, 2 proved, 0 passed, 0 refuted, 1 vacuous, 0 unknown'
+for fallback in normal error timeout unsupported; do
+    rm -f "$SHALLOW_MARKER".{first,stalled,primary,unsupported,inflight}
+    FALLBACK=$fallback PATH="$work/shallow-tools:$PATH" run 0 vacuity-shallow multi
+    if [[ $fallback == unsupported ]]; then
+        [[ -e $SHALLOW_MARKER.unsupported && ! -e $SHALLOW_MARKER.first ]]
     else
-        has '1 task, 1 proved, 0 passed, 0 refuted, 0 vacuous, 2 unknown'
+        [[ -s $SHALLOW_MARKER.stalled && ! -e /proc/$(cat "$SHALLOW_MARKER.stalled")/exe ]]
+    fi
+    has_vacuity shallow.early proved triggered
+    if [[ $fallback == normal || $fallback == unsupported ]]; then
+        has_vacuity shallow.late proved triggered
+        has_vacuity shallow.excluded proved 'never triggered'
+    else
+        has_vacuity shallow.late proved unchecked
+        has_vacuity shallow.excluded proved unchecked
+        has '1 task, 3 proved, 0 passed, 0 refuted, 0 unknown; vacuity: 1 triggered, 0 not triggered, 0 never triggered, 2 unchecked'
+    fi
+    if [[ $fallback == timeout ]]; then
+        [[ $(wc -l < "$SHALLOW_MARKER.inflight") == 1 ]]
+        [[ $(wc -l < "$(progress_file)") == 4 ]]
     fi
 done
 
-# The first proof has a certificate. The others are still checking when
-# the original task deadline interrupts the fallback. The final TSV must
-# contain the same decisions and timeout reasons as the CLI.
-rm -f "$SHALLOW_MARKER.first" "$SHALLOW_MARKER.stalled"
-FALLBACK=timeout PATH="$work/shallow-tools:$PATH" run 3 vacuity-shallow multi
-[[ $(wc -l < "$SHALLOW_MARKER.inflight") == 1 ]]
-journal=$(progress_file)
-[[ $(wc -l < "$journal") == 4 ]]
-grep -Fxq $'final\tshallow.early\t\tproved\t' "$journal"
-for prop in shallow.excluded shallow.late; do
-    has "$prop  unknown"
-    grep -Fxq $'final\t'"$prop"$'\t\tunknown\tproved; vacuity check timed out' "$journal"
-done
-has '1 task, 1 proved, 0 passed, 0 refuted, 0 vacuous, 2 unknown'
-
-# If the shallow worker cannot encode an assumption, it must query no target.
-rm -f "$SHALLOW_MARKER.first" "$SHALLOW_MARKER.stalled"
-FALLBACK=unsupported PATH="$work/shallow-tools:$PATH" run 3 vacuity-shallow multi
-[[ -e $SHALLOW_MARKER.unsupported && ! -e $SHALLOW_MARKER.first ]]
-has '1 task, 2 proved, 0 passed, 0 refuted, 1 vacuous, 0 unknown'
-
-# The loop can have period two. Even though its suffix reaches cycle 5,
-# only the match at cycle 4 survives an unavailable unbounded fallback.
+# The finite shallow query cannot see a match that starts after its bound.
 rm -f "$SHALLOW_MARKER.first"
-FALLBACK=window PATH="$work/shallow-tools:$PATH" run 3 vacuity-shallow window
-has 'periodic.on_time  proved'
-has 'periodic.later  unknown'
+FALLBACK=window PATH="$work/shallow-tools:$PATH" run 0 vacuity-shallow window
+has_vacuity periodic.on_time proved triggered
+has_vacuity periodic.later proved unchecked
 
 # Spec 25: veval lowers the assertions; Crisp's EBMC checks each landing.
 run 0 veval assumed
@@ -951,15 +923,15 @@ has 'proved in reset_top.u_child (veval)'
 run 0 veval reset_agree
 has 'reset_top.u_child.p_small  proved'
 journal=$(progress_file)
-grep -Fxq $'local\treset_top.u_child.p_small\treset_top.u_child\tproved\tproved in reset_top.u_child (veval)' "$journal"
-grep -Fxq $'final\treset_top.u_child.p_small\t\tproved\tproved in reset_top.u_child (veval)' "$journal"
+grep -Fxq $'local\treset_top.u_child.p_small\treset_top.u_child\tproved\tproved in reset_top.u_child (veval)\tunchecked' "$journal"
+grep -Fxq $'final\treset_top.u_child.p_small\t\tproved\tproved in reset_top.u_child (veval)\tunchecked' "$journal"
 run 3 veval reset_conflict
 has 'reset_top.u_child.p_small  unknown'
 reason='veval: reset_top.u_child: no local conclusion, Crisp cannot state its two different resets (rst and rst)'
 has "$reason"
 journal=$(progress_file)
 [[ $(wc -l < "$journal") == 2 ]]
-grep -Fxq $'final\treset_top.u_child.p_small\t\tunknown\t'"$reason" "$journal"
+grep -Fxq $'final\treset_top.u_child.p_small\t\tunknown\t'"$reason"$'\tunchecked' "$journal"
 run 3 veval no_reset
 has 'local counterexample in reset_top.u_child'
 run 0 veval aliases
@@ -967,7 +939,7 @@ for property in alias_top.p_parent alias_top.u_mid.u_leaf.p_small; do
     has $'local\t'"$property"$'\talias_top.u_mid.u_leaf\tproved\t' "$(progress_file)"
 done
 run 3 veval aliases_no_reset
-has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 2 unknown'
+has '1 task, 0 proved, 0 passed, 0 refuted, 2 unknown'
 [[ $(grep -c 'local counterexample in alias_top.u_mid.u_leaf ' out) == 2 ]]
 run 0 veval unconnected
 has 'proved in unreset_top.u_child (veval); checked without reset: no input of unreset_top.u_child is connected to rst'
@@ -979,7 +951,7 @@ timeout 11 env PATH="$work/no-spot" "$root/build/crisp" "$root/tests/cases/veval
 veval_only_line=$(grep -nx 'veval only' "$root/tests/cases/veval.salt" | cut -d: -f1)
 has "crisp: $root/tests/cases/veval.salt:$veval_only_line: [options] veval only: ltl2tgba not found in PATH; install Spot (https://spot.lre.epita.fr/install.html) or add its bin directory to PATH" err
 [[ $(wc -l < err) == 1 ]]
-has '1 task, 0 proved, 0 passed, 0 refuted, 0 vacuous, 0 unknown'
+has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
 # The direct engine also reports its dependency before starting a check.
 status=0
 timeout 11 env PATH="$work/no-spot" "$root/build/crisp" "$root/tests/cases/buechi.salt" pdr >out 2>err || status=$?

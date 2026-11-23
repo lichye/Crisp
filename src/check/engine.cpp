@@ -113,7 +113,7 @@ cmdlinet command_line(const front::Task& task) {
     for (const auto& arg : args) argv.push_back(arg.c_str());
     cmdlinet cmd;
     if (cmd.parse(argv.size(), argv.data(),
-                  "I:D:(systemverilog)(top):(bdd)(new-ic3)(bound):(k-induction)(aig)(yices)(undriven):") ||
+                  "I:D:(systemverilog)(top):(bdd)(new-ic3)(bound):(k-induction)(aig)(yices)(undriven):(finite-prefix)") ||
         config.set(cmd))
         throw std::runtime_error("EBMC rejected the task options");
     // In this fork --aig takes precedence over --k-induction and dispatches
@@ -213,9 +213,9 @@ ebmc_propertiest single_target(const ebmc_propertiest& batch, const Property& ta
 
 } // namespace
 
-std::optional<trans_tracet> reconstruct_counterexample(
+static std::optional<trans_tracet> reconstruct_counterexample(
     const cmdlinet& cmd, const transition_systemt& system, const ebmc_propertiest& batch, const Property& property,
-    TraceRequirement requirement, message_handlert& messages) {
+    message_handlert& messages) {
     auto target = single_target(batch, property);
     auto& goal = target.properties.back();
     goal.unknown();
@@ -231,7 +231,6 @@ std::optional<trans_tracet> reconstruct_counterexample(
         for (auto& p : result.properties) {
             if (p.identifier != property.identifier) continue;
             if (refuted(p) && p.witness_trace) {
-                if (requirement == TraceRequirement::finite_prefix) return std::move(p.witness_trace);
                 certify_property_witnesses(cmd, system, result, bound, messages);
                 if (refuted(p) && p.witness_trace && certified(*p.witness_trace))
                     return std::move(p.witness_trace);
@@ -277,7 +276,18 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
     }
     if (ids.empty()) return;
 
+    const auto publish_vacuity = [&](const irep_idt& id, const std::string& value) {
+        reporter.send(ids.at(id), "vacuity", value);
+    };
+    if (operation == EngineRun::vacuity) {
+        Targets selected;
+        for (const auto& entry : ids) selected.insert(entry.first);
+        check_antecedents(cmd, *system, properties, selected, task, deadline, messages, publish_vacuity);
+        return;
+    }
+    const auto complete = [&] { reporter.send(0, "primary-complete"); };
     messaget message(messages);
+    Targets proved;
     witness_lasso_observert observe_lasso;
     if (operation == EngineRun::solve_with_lasso) {
         observe_lasso = [&](const witness_lasso_viewt& witness) {
@@ -313,7 +323,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
         } else if (refuted(p)) {
             if (p.witness_certificate == Property::witness_certificatet::TOTAL_BDD) {
                 reporter.send(index, "refuted", "exact BDD verdict (no certified waveform)");
-                p.witness_trace = reconstruct_counterexample(cmd, model, batch, p, TraceRequirement::certified, messages);
+                p.witness_trace = reconstruct_counterexample(cmd, model, batch, p, messages);
                 if (!p.witness_trace) return;
             }
             if (!p.witness_trace || !certified(*p.witness_trace))
@@ -326,8 +336,13 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
             reporter.send(index, "refuted");
         } else if (task.mode.value == Mode::bmc && (p.is_proved_with_bound() || p.is_proved())) {
             reporter.send(index, "passed", "bmc depth " + std::to_string(task.depth->value));
+            if (operation == EngineRun::solve_primary && has_antecedent(p.original_expr))
+                reporter.send(index, "antecedent");
         } else if (p.is_proved()) {
             reporter.send(index, "proved");
+            if (operation == EngineRun::solve_primary && has_antecedent(p.original_expr))
+                reporter.send(index, "antecedent");
+            proved.insert(p.identifier);
         } else {
             std::string reason;
             if (p.is_proved_with_bound()) reason = "no counterexample through depth " + std::to_string(p.bound);
@@ -337,26 +352,24 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
             reporter.send(index, "unknown", reason);
         }
     };
-    auto check_batch = [&](ebmc_propertiest& batch) {
-        check_antecedents(cmd, *system, batch, task, deadline, messages, report,
-                          [&](const irep_idt& id, const char* status, const std::string& detail) {
-                              reporter.send(ids.at(id), status, detail);
-                          }, observe_lasso);
-    };
-    if (task.mode.value != Mode::pdr || ids.size() == 1) {
-        check_batch(properties);
+    if (task.mode.value == Mode::bmc && operation != EngineRun::solve_primary) {
+        check_bounded_assertions(cmd, *system, properties, task, messages, report, complete, publish_vacuity,
+                                 observe_lasso);
         return;
     }
-    // Publish each PDR verdict before checking the next property in case the task times out.
-    ebmc_propertiest assumptions;
-    for (const auto& p : properties.properties)
-        if (p.is_assumption()) assumptions.properties.push_back(p);
-    for (const auto& p : properties.properties) {
-        if (p.is_assumption() || p.is_disabled()) continue;
-        auto single = assumptions;
-        single.properties.push_back(p);
-        check_batch(single);
+    if (task.mode.value == Mode::pdr && ids.size() > 1) {
+        // Keep the per-property PDR verdicts available even if a later primary check times out.
+        for (const auto& p : properties.properties) {
+            if (p.is_assumption() || p.is_disabled()) continue;
+            const auto single = single_target(properties, p);
+            check_assertions(cmd, *system, single, task, messages, report, observe_lasso);
+        }
+    } else {
+        check_assertions(cmd, *system, properties, task, messages, report, observe_lasso);
     }
+    complete();
+    if (operation != EngineRun::solve_primary)
+        check_antecedents(cmd, *system, properties, proved, task, deadline, messages, publish_vacuity);
 }
 } // namespace
 

@@ -9,9 +9,7 @@
 #include <ebmc/property_checker.h>
 #include <temporal-logic/normalize_property.h>
 #include <temporal-logic/rewrite_sva_sequence.h>
-#include <trans-word-level/instantiate_word_level.h>
 #include <trans-word-level/lasso.h>
-#include <trans-word-level/next_symbol.h>
 #include <trans-word-level/unwind.h>
 #include <util/exception_utils.h>
 #include <util/simplify_expr.h>
@@ -73,45 +71,19 @@ exprt unreachable(const exprt& implication, exprt::operandst disabled, const nam
     return normalize_property(sva_always_exprt{disjunction(disabled)});
 }
 
-// unwind includes an outgoing transition for the last sample. Close that
-// transition onto any sampled state. Join every next-state reference (also
-// monitor, history and reset state); combinational inputs on the loop repeat
-// their already checked values. Only the initial prefix needs to satisfy init.
-exprt loop_closure(const transition_systemt& model, std::size_t frames) {
-    std::set<symbol_exprt> carried;
-    auto collect = [&](const exprt& e) {
-        if (e.id() == ID_next_symbol)
-            carried.emplace(to_next_symbol_expr(e).identifier(), e.type());
-    };
-    model.trans_expr.trans().visit_pre(collect);
-    model.trans_expr.invar().visit_pre(collect);
-    exprt::operandst choices;
-    for (std::size_t entry = 0; entry < frames; ++entry) {
-        exprt::operandst equalities;
-        for (const auto& v : carried)
-            equalities.push_back(equal_exprt{timeframe_symbol(frames, v), timeframe_symbol(entry, v)});
-        choices.push_back(conjunction(equalities));
-    }
-    return disjunction(choices);
-}
-
-// Encode the complete match inside the prefix. Extra samples may discharge
-// future obligations and close a loop, but cannot supply a later match.
-void certified_witnesses(cmdlinet smt, const transition_systemt& system, const ebmc_propertiest& batch,
-                         const Probes& probes, const Targets& pending, std::size_t match_frames,
-                         const trans_tracet* prefix,
-                         message_handlert& messages, const Witness& hit) {
-    // Allow two suffix samples on the cheap depth-4 search. For an engine
-    // counterexample allow at least 16, or another prefix length for long traces.
-    const auto suffix = prefix ? std::max<std::size_t>(16, match_frames) : 2;
-    // A strict backend trace can already include a longer certified loop.
-    // Recheck at its full length on the original model and assumption set.
-    const auto frames = prefix && prefix->loop_start ? prefix->states.size() : match_frames + suffix;
-    auto model = fresh_model(system);
+ebmc_propertiest assumptions_of(const ebmc_propertiest& batch) {
     ebmc_propertiest assumptions;
     for (const auto& p : batch.properties)
         if (p.is_assumption()) assumptions.properties.push_back(p);
-    // Every certificate must encode all the original assumptions.
+    return assumptions;
+}
+
+void find_shallow_matches(cmdlinet smt, const transition_systemt& system, const ebmc_propertiest& batch,
+                          const Probes& probes, const Targets& pending, message_handlert& messages,
+                          const Witness& hit) {
+    constexpr std::size_t frames = 5; // depth 4, including the initial frame
+    auto model = fresh_model(system);
+    auto assumptions = assumptions_of(batch);
     instrument_buechi(model, assumptions, true, messages);
     instrument_past(model, assumptions);
     if (has_past(model, assumptions)) return;
@@ -127,49 +99,82 @@ void certified_witnesses(cmdlinet smt, const transition_systemt& system, const e
             has_temporal_operator(to_unary_expr(expr).op())) return;
         solver.set_to_true(conjunction(property(expr, true, messages, frames)));
     }
-    solver.set_to_true(loop_closure(model, frames));
-    exprt::operandst fixed;
-    if (prefix) {
-        // Preserve every concrete assignment in the engine's failing prefix
-        // that belongs to the original RTL. The two independently elaborated
-        // monitor copies can use different auxiliary symbols.
-        for (std::size_t t = 0; t < match_frames; ++t) {
-            for (const auto& a : prefix->states.at(t).assignments) {
-                if (a.rhs.is_nil() || !system.symbol_table.has_symbol(to_symbol_expr(a.lhs).identifier()))
-                    continue;
-                fixed.push_back(equal_exprt{instantiate(a.lhs, t, frames), a.rhs});
-            }
-        }
-    }
 
-    auto solve = [&](const exprt& query) {
-        const auto result = solver(query);
-        if (result == decision_proceduret::resultt::D_ERROR)
-            throw std::runtime_error("BMC witness solver error");
-        return result == decision_proceduret::resultt::D_SATISFIABLE;
-    };
     for (const auto& id : pending) {
         const auto& probe = probes.at(id);
         if (!bmc_supports_property(probe.normalized_expr)) continue;
-        const auto obligations = property(probe.normalized_expr, false, messages, match_frames);
+        const auto obligations = property(probe.normalized_expr, false, messages, frames);
         if (uses_lasso_symbol(obligations)) continue;
-        const auto match = not_exprt{conjunction(obligations)};
-        // An engine may choose unrelated input values which make its prefix
-        // a dead end. Only a separate complete matching lasso can replace it.
-        if ((!fixed.empty() && solve(and_exprt{match, conjunction(fixed)})) || solve(match))
-            hit(probe.number);
+        const auto result = solver(not_exprt{conjunction(obligations)});
+        if (result == decision_proceduret::resultt::D_ERROR)
+            throw std::runtime_error("BMC witness solver error");
+        if (result == decision_proceduret::resultt::D_SATISFIABLE) hit(probe.number);
     }
 }
 
-// Consult only the result for the exact auxiliary property checked on this
-// batch's full model. An exact BDD totality proof need not carry a trace.
-bool has_infinite_witness(const Property& probe) {
-    using Certificate = Property::witness_certificatet;
-    if (probe.witness_certificate == Certificate::TOTAL_BDD) return true;
-    const auto& trace = probe.witness_trace;
-    if (!trace || !trace->get_min_failing_timeframe()) return false;
-    return (probe.witness_certificate == Certificate::LASSO && trace->loop_start.has_value()) ||
-           (probe.witness_certificate == Certificate::TOTAL_PREFIX && trace->total_extension);
+struct Antecedents {
+    Probes probes;
+    Targets constants;
+    std::map<std::size_t, irep_idt> ids;
+};
+
+Antecedents prepare_antecedents(const transition_systemt& system, const ebmc_propertiest& batch,
+                               bool buechi, const Targets& selected) {
+    const namespacet ns(system.symbol_table);
+    Antecedents out;
+    for (const auto& p : batch.properties) {
+        if (p.is_disabled() || p.is_assumption() || !selected.count(p.identifier)) continue;
+        exprt::operandst disabled;
+        const auto body = implication(p.original_expr, disabled);
+        if (!body) continue;
+        auto probe = p;
+        try {
+            probe.original_expr = unreachable(*body, std::move(disabled), ns, buechi);
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (...) {
+            continue;
+        }
+        if (probe.original_expr.is_true()) out.constants.insert(p.identifier);
+        else {
+            probe.identifier = "crisp::antecedent::" + id2string(p.identifier);
+            probe.normalized_expr = probe.original_expr;
+            out.ids.emplace(p.number, p.identifier);
+            out.probes.emplace(p.identifier, std::move(probe));
+        }
+    }
+    return out;
+}
+
+property_checker_resultt check(const cmdlinet& cmd, transition_systemt& model, ebmc_propertiest& queries,
+                               front::Mode mode, message_handlert& messages,
+                               const witness_lasso_observert& observer = {}) {
+    if (mode == front::Mode::pdr || mode == front::Mode::kind)
+        instrument_buechi(model, queries, mode == front::Mode::pdr, messages);
+    if (cmd.isset("finite-prefix") && (mode == front::Mode::pdr || mode == front::Mode::kind)) {
+        // Keep the same temporal assumption lowering that the strict backend
+        // performs before solving. Only auxiliary witness certification is skipped.
+        try {
+            instrument_buechi(model, queries, true, messages, true);
+        } catch (const ebmc_errort& error) {
+            messaget{messages}.warning() << error.what() << messaget::eom;
+        }
+    }
+    auto result = property_checker(cmd, model, queries, messages, observer);
+    if (result.status != property_checker_resultt::statust::VERIFICATION_RESULT)
+        throw std::runtime_error("EBMC did not return verification results");
+    return result;
+}
+
+void report_assertions(const transition_systemt& model, const ebmc_propertiest& queries,
+                       ebmc_propertiest::propertiest& results, const ReportOriginal& report) {
+    // An unsupported assumption invalidates the entire batch.
+    for (auto& p : results) if (p.is_assumption()) report(model, queries, p);
+    for (auto& p : results) if (!p.is_assumption() && !p.is_disabled()) report(model, queries, p);
+}
+
+std::string bounded_miss(std::size_t bound) {
+    return "not triggered within " + std::to_string(bound);
 }
 
 std::string failure_reason() {
@@ -209,172 +214,126 @@ std::optional<exprt> local_implication(exprt original) {
     return original;
 }
 
-void check_antecedents(const cmdlinet& cmd, transition_systemt& system, ebmc_propertiest& batch,
-                       const front::Task& task, Deadline deadline, message_handlert& messages,
-                       const ReportOriginal& report, const ReportVacuity& publish,
-                       const witness_lasso_observert& observe_lasso) {
-    const namespacet ns(system.symbol_table);
-    const bool bounded = task.mode.value == front::Mode::bmc;
-    const bool pdr = task.mode.value == front::Mode::pdr;
-    const bool buechi = pdr || task.mode.value == front::Mode::kind;
-    const std::string original = bounded ? "passed" : "proved";
-    const auto detail = bounded ? "bmc depth " + std::to_string(task.depth->value) : "";
-    Probes probes;
-    Targets constants, pending;
-    std::map<std::size_t, irep_idt> ids;
-    for (const auto& p : batch.properties) {
-        if (p.is_disabled() || p.is_assumption()) continue;
-        exprt::operandst disabled;
-        const auto body = implication(p.original_expr, disabled);
-        if (!body) continue;
-        auto probe = p;
-        try {
-            probe.original_expr = unreachable(*body, std::move(disabled), ns, buechi);
-        } catch (...) {
-            probe.failure(failure_reason());
-        }
-        if (!probe.is_failure() && probe.original_expr.is_true()) {
-            constants.insert(p.identifier);
-        } else {
-            probe.identifier = "crisp::antecedent::" + id2string(p.identifier);
-            probe.normalized_expr = probe.original_expr;
-            ids.emplace(p.number, p.identifier);
-            probes.emplace(p.identifier, std::move(probe));
-        }
-    }
-    bool checking = false;
-    auto record = [&](const transition_systemt& model, const ebmc_propertiest& queries,
-                      ebmc_propertiest::propertiest& results) {
-        // An unsupported assumption invalidates the entire batch.
-        for (auto& p : results) if (p.is_assumption()) report(model, queries, p);
-        for (auto& p : results) {
-            if (p.is_disabled() || p.is_assumption()) continue;
-            const bool success = p.is_proved() || (bounded && p.is_proved_with_bound());
-            if (success && constants.count(p.identifier)) {
-                publish(p.identifier, "vacuous", "antecedent is constant false");
-            } else if (success && probes.count(p.identifier) && probes.at(p.identifier).is_failure()) {
-                publish(p.identifier, "unknown", original + "; vacuity check: " + probes.at(p.identifier).status_as_string());
-            } else if (success && probes.count(p.identifier)) {
-                publish(p.identifier, "checking", original);
-                pending.insert(p.identifier);
-            } else report(model, queries, p);
-        }
-        checking = true;
-    };
-    auto finish = [&](const Property& probe) {
-        const auto& id = ids.at(probe.number);
-        pending.erase(id);
-        if (refuted(probe))
-            publish(id, original.c_str(), detail);
-        else if (probe.is_proved() || (bounded && probe.is_proved_with_bound()))
-            publish(id, "vacuous", bounded ? "antecedent not reached within depth " + std::to_string(task.depth->value) :
-                                             "antecedent proved unreachable");
-        else publish(id, "unknown", original + "; vacuity check: " + probe.status_as_string());
-    };
-    auto check = [&](transition_systemt& model, ebmc_propertiest& queries,
-                     const witness_lasso_observert& observer = {}) {
-        if (buechi)
-            instrument_buechi(model, queries, pdr, messages);
-        auto result = property_checker(cmd, model, queries, messages, observer);
-        if (result.status != property_checker_resultt::statust::VERIFICATION_RESULT)
-            throw std::runtime_error("EBMC did not return verification results");
-        return result;
-    };
-    try {
-        if (bounded) {
-            if (probes.empty()) {
-                auto result = check(system, batch, observe_lasso);
-                record(system, batch, result.properties);
-            } else {
-                bounded_checks(cmd, system, batch, probes, task.depth->value, [&](ebmc_propertiest& checked) {
-                    property_checker_resultt originals{checked};
-                    // Only original counterexamples need the backend's infinite
-                    // extension. A passed assertion's probe uses its finite depth.
-                    certify_property_witnesses(cmd, system, originals, task.depth->value, messages, observe_lasso);
-                    record(system, checked, originals.properties);
-                    return pending;
-                }, finish, messages);
-            }
-            return;
-        }
-        // Monitor installation changes both the properties and the transition
-        // relation. Each antecedent query starts from the original design.
-        {
-            auto primary = fresh_model(system);
-            auto queries = batch;
-            auto result = check(primary, queries, observe_lasso);
-            record(primary, queries, result.properties);
-        }
-        if (pending.empty()) return;
-        const auto now = std::chrono::steady_clock::now();
-        const auto shallow_deadline = std::min(now + std::chrono::seconds(30), now + (deadline - now) / 4);
-        try {
-            run_shallow_bmc(shallow_deadline, [&](const Witness& hit) {
-                constexpr std::size_t depth = 4;
-                certified_witnesses(cmd, system, batch, probes, pending, depth + 1, nullptr, messages, hit);
-            }, [&](std::size_t number) {
-                const auto& id = ids.at(number);
-                publish(id, original.c_str(), detail);
-                pending.erase(id);
-            });
-        } catch (...) {
-            std::fprintf(stderr, "shallow BMC: %s\n", failure_reason().c_str());
-        }
-        if (!pending.empty()) {
-            auto model = fresh_model(system);
-            ebmc_propertiest queries;
-            for (const auto& p : batch.properties)
-                if (p.is_assumption()) queries.properties.push_back(p);
-            for (const auto& id : pending) {
-                const auto& probe = probes.at(id);
-                auto symbol = model.symbol_table.lookup_ref(id);
-                symbol.name = probe.identifier;
-                symbol.value = probe.original_expr;
-                if (model.symbol_table.add(std::move(symbol)))
-                    throw std::runtime_error("duplicate antecedent symbol: " + id2string(probe.identifier));
-                queries.properties.push_back(probe);
-            }
-            auto exact = check(model, queries);
-            for (const auto& p : exact.properties)
-                if (p.is_assumption() && !p.is_assumed()) throw std::runtime_error(p.status_as_string());
-            for (const auto& p : exact.properties) {
-                if (p.is_assumption()) continue;
-                const auto& id = ids.at(p.number);
-                if (!pending.count(id) || p.identifier != probes.at(id).identifier)
-                    throw std::runtime_error("unexpected EBMC antecedent result");
-                if (!refuted(p) || has_infinite_witness(p)) finish(p);
-            }
-            for (auto& p : exact.properties) {
-                if (p.is_assumption() || !refuted(p)) continue;
-                const auto& id = ids.at(p.number);
-                if (!pending.count(id)) continue; // already certified on this goal
+bool has_antecedent(const exprt& original) {
+    exprt::operandst disabled;
+    return implication(original, disabled) != nullptr;
+}
 
-                std::string reason = "finite counterexample has no certified infinite extension";
-                bool certified = false;
-                try {
-                    if (!p.witness_trace)
-                        p.witness_trace = reconstruct_counterexample(
-                            cmd, model, queries, p, TraceRequirement::finite_prefix, messages);
-                    const auto end = p.witness_trace ? p.witness_trace->get_min_failing_timeframe() : std::nullopt;
-                    if (end) {
-                        certified_witnesses(cmd, system, batch, probes, {id}, *end + 1, &*p.witness_trace, messages,
-                                            [&](std::size_t) { certified = true; });
-                    }
-                } catch (...) {
-                    reason += ": " + failure_reason();
-                }
-                if (certified) finish(p);
-                else {
-                    pending.erase(id);
-                    publish(id, "unknown", original + "; vacuity check: " + reason);
-                }
-            }
-            if (!pending.empty()) throw std::runtime_error("missing EBMC antecedent result");
-        }
+void check_assertions(const cmdlinet& cmd, const transition_systemt& system, const ebmc_propertiest& batch,
+                      const front::Task& task, message_handlert& messages, const ReportOriginal& report,
+                      const witness_lasso_observert& observe_lasso) {
+    auto model = fresh_model(system);
+    auto queries = batch;
+    auto result = check(cmd, model, queries, task.mode.value, messages, observe_lasso);
+    report_assertions(model, queries, result.properties, report);
+}
+
+void check_bounded_assertions(const cmdlinet& cmd, transition_systemt& system, ebmc_propertiest& batch,
+                              const front::Task& task, message_handlert& messages, const ReportOriginal& report,
+                              const std::function<void()>& complete, const ReportVacuity& publish,
+                              const witness_lasso_observert& observe_lasso) {
+    Targets selected;
+    for (const auto& p : batch.properties)
+        if (!p.is_disabled() && !p.is_assumption()) selected.insert(p.identifier);
+    auto antecedents = prepare_antecedents(system, batch, false, selected);
+    const auto bound = task.depth->value;
+    Targets passed;
+    const auto record = [&](const transition_systemt& model, const ebmc_propertiest& queries, Property& p) {
+        report(model, queries, p);
+        if (p.is_proved() || p.is_proved_with_bound()) passed.insert(p.identifier);
+    };
+    const auto record_constants = [&] {
+        complete();
+        for (const auto& id : antecedents.constants)
+            if (passed.count(id)) publish(id, "never triggered");
+    };
+    if (antecedents.probes.empty()) {
+        check_assertions(cmd, system, batch, task, messages, record, observe_lasso);
+        record_constants();
+        return;
+    }
+    bounded_checks(cmd, system, batch, antecedents.probes, bound, [&](ebmc_propertiest& checked) {
+        // The original counterexamples use the original-goal batch and the
+        // same strict EBMC certification as standalone checks.
+        property_checker_resultt originals{checked};
+        certify_property_witnesses(cmd, system, originals, bound, messages, observe_lasso);
+        report_assertions(system, checked, originals.properties, record);
+        record_constants();
+        Targets pending;
+        for (const auto& id : passed)
+            if (antecedents.probes.count(id)) pending.insert(id);
+        return pending;
+    }, [&](const Property& probe) {
+        const auto& id = antecedents.ids.at(probe.number);
+        if (refuted(probe)) publish(id, "triggered");
+        else if (probe.is_proved_with_bound()) publish(id, bounded_miss(bound));
+    }, messages);
+}
+
+void check_antecedents(const cmdlinet& cmd, const transition_systemt& system, const ebmc_propertiest& batch,
+                       const Targets& selected, const front::Task& task, Deadline deadline,
+                       message_handlert& messages, const ReportVacuity& publish) {
+    if (selected.empty() || std::chrono::steady_clock::now() >= deadline) return;
+    const auto mode = task.mode.value;
+    auto antecedents = prepare_antecedents(system, batch, mode == front::Mode::pdr || mode == front::Mode::kind, selected);
+    for (const auto& id : antecedents.constants) publish(id, "never triggered");
+    Targets pending;
+    for (const auto& entry : antecedents.probes) pending.insert(entry.first);
+    if (pending.empty()) return;
+    if (mode == front::Mode::bmc) {
+        // Veval landings run their primary engine first and check auxiliary
+        // covers only after the remaining primary work in the task.
+        auto model = fresh_model(system);
+        auto assumptions = assumptions_of(batch);
+        const auto bound = task.depth->value;
+        bounded_checks(cmd, model, assumptions, antecedents.probes, bound, [&](ebmc_propertiest& checked) {
+            for (const auto& p : checked.properties)
+                if (!p.is_assumed()) throw std::runtime_error(p.status_as_string());
+            return pending;
+        }, [&](const Property& probe) {
+            const auto& id = antecedents.ids.at(probe.number);
+            if (refuted(probe)) publish(id, "triggered");
+            else if (probe.is_proved_with_bound()) publish(id, bounded_miss(bound));
+        }, messages);
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto shallow_deadline = std::min(now + std::chrono::seconds(30), now + (deadline - now) / 4);
+    try {
+        run_shallow_bmc(shallow_deadline, [&](const Witness& hit) {
+            find_shallow_matches(cmd, system, batch, antecedents.probes, pending, messages, hit);
+        }, [&](std::size_t number) {
+            const auto& id = antecedents.ids.at(number);
+            publish(id, "triggered");
+            pending.erase(id);
+        });
     } catch (...) {
-        if (!checking) throw;
-        const auto why = failure_reason();
-        for (const auto& id : pending) publish(id, "unknown", original + "; vacuity check: " + why);
+        std::fprintf(stderr, "shallow BMC: %s\n", failure_reason().c_str());
+    }
+    if (pending.empty() || std::chrono::steady_clock::now() >= deadline) return;
+    auto model = fresh_model(system);
+    auto queries = assumptions_of(batch);
+    for (const auto& id : pending) {
+        const auto& probe = antecedents.probes.at(id);
+        auto symbol = model.symbol_table.lookup_ref(id);
+        symbol.name = probe.identifier;
+        symbol.value = probe.original_expr;
+        if (model.symbol_table.add(std::move(symbol)))
+            throw std::runtime_error("duplicate antecedent symbol: " + id2string(probe.identifier));
+        queries.properties.push_back(probe);
+    }
+    auto auxiliary = cmd;
+    auxiliary.set("finite-prefix");
+    auto exact = check(auxiliary, model, queries, mode, messages);
+    for (const auto& p : exact.properties)
+        if (p.is_assumption() && !p.is_assumed()) throw std::runtime_error(p.status_as_string());
+    for (const auto& p : exact.properties) {
+        if (p.is_assumption()) continue;
+        const auto& id = antecedents.ids.at(p.number);
+        if (!pending.count(id) || p.identifier != antecedents.probes.at(id).identifier)
+            throw std::runtime_error("unexpected EBMC antecedent result");
+        if (refuted(p)) publish(id, "triggered");
+        else if (p.is_proved()) publish(id, "never triggered");
     }
 }
 } // namespace crisp::check
