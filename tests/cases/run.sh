@@ -452,7 +452,7 @@ for task in ram_word ram_auto; do
     # witness may then close at its own valid loop frame.
     awk -v fixture=ram -v bound=10 -v require_certificate=1 -f "$root/tests/cases/check-witness.awk" "$wave"
 done
-# The SMT formulas go to the task's scratch directory, not to TMPDIR or /tmp.
+# The solver uses a private directory inside the run's output directory.
 [[ -z $(ls -A empty-tmp) ]]
 if [[ -n $(find /tmp -maxdepth 1 -newer "$marker" -name 'smt2_dec_*' 2>/dev/null) ]]; then
     echo 'level word left SMT files in /tmp' >&2
@@ -480,6 +480,46 @@ for pid in $(pgrep -f yices-smt2 || true); do
         exit 1
     fi
 done
+
+# Inspect the live SMT input and leave extra files that require parent cleanup.
+# Keep the solver alive on timeout and after killing its EBMC parent.
+mkdir -p cleanup-solver crisp-out/level-word_factor/tmp
+touch "$TMPDIR/keep" crisp-out/level-word_factor/tmp/smt2_dec_problem_keep
+cat > cleanup-solver/yices-smt2 <<'SOLVER'
+#!/usr/bin/env bash
+set -eu
+[[ $1 == "$TMPDIR"/smt2_dec_problem_* && -s $1 && $PWD == "$TMPDIR" ]]
+touch "$TMPDIR/smt2_dec_stdout_leftover" relative-dump.smt2
+printf '%s\n' "$TMPDIR" >> "$CLEANUP_TRACE"
+case $CLEANUP_MODE in
+    normal) exec "$CLEANUP_REAL_YICES" "$@" ;;
+    killed) kill -KILL "$PPID" ;;
+esac
+exec sleep 15
+SOLVER
+chmod +x cleanup-solver/yices-smt2
+export CLEANUP_REAL_YICES=$(command -v yices-smt2) CLEANUP_TRACE="$work/cleanup-trace"
+rm crisp-out/level-word_ram_word/ram_word.p_untouched.vcd
+for cleanup_mode in normal timeout killed; do
+    case $cleanup_mode in
+        normal) task=ram_word; expected=1 ;;
+        timeout) task=factor; expected=3 ;;
+        killed) task=factor; expected=2 ;;
+    esac
+    : > "$CLEANUP_TRACE"
+    CLEANUP_MODE=$cleanup_mode PATH="$work/cleanup-solver:$PATH" run "$expected" level-word "$task"
+    case $cleanup_mode in
+        normal) valid_vcd crisp-out/level-word_ram_word/ram_word.p_untouched.vcd ;;
+        timeout) has 'timeout after 2 s' ;;
+        killed) has 'EBMC terminated by signal 9' err ;;
+    esac
+    [[ -s $CLEANUP_TRACE && -s $(progress_file) ]]
+    while IFS= read -r solver_tmp; do
+        [[ $solver_tmp == "$work/crisp-out"/.crisp-ebmc.*/tmp.* ]]
+        [[ ! -e $solver_tmp && ! -e ${solver_tmp%/*} ]]
+    done < "$CLEANUP_TRACE"
+done
+[[ -f $TMPDIR/keep && -f crisp-out/level-word_factor/tmp/smt2_dec_problem_keep ]]
 
 # Designs that Yices 2.7 rejects (spec 19, 3.6): EBMC reports FAILURE at
 # level word, and no verdict is given; level auto still decides them. When
