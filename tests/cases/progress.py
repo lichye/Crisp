@@ -37,8 +37,9 @@ salt.write_text(f"[files]\n{cases}/veval-two.sv\n[design]\ntop two_top\n"
 shim = Path("progress-tools").resolve()
 shim.mkdir()
 solver = shim / "yices-smt2"
-solver.write_text('#!/bin/sh\nif [ "${PWD##*/}" = check1 ]; then\n'
-                  '  echo "$$" > "$MARKER"\n  exec sleep 30\nfi\nexec "$YICES" "$@"\n')
+solver.write_text('#!/bin/sh\ncase "$PWD" in\n'
+                  '  */veval/check1/tmp.*) echo "$$" > "$MARKER"; exec sleep 30 ;;\n'
+                  'esac\nexec "$YICES" "$@"\n')
 solver.chmod(0o755)
 marker = shim / "blocked"
 env = dict(os.environ, PATH=f"{shim}:{os.environ['PATH']}", YICES=shutil.which("yices-smt2"), MARKER=str(marker))

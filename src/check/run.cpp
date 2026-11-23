@@ -41,16 +41,21 @@ std::system_error os_error(const char* operation) {
 
 struct Scratch {
     fs::path path;
-    Scratch() {
-        auto pattern = (fs::temp_directory_path() / "crisp-ebmc.XXXXXX").string();
-        if (!::mkdtemp(pattern.data())) throw os_error("create task directory");
-        path = fs::absolute(pattern);
+    Scratch(const fs::path& directory, const char* name) {
+        auto pattern = fs::absolute(directory / name).string();
+        if (!::mkdtemp(pattern.data())) throw os_error("create scratch directory");
+        path = pattern;
     }
     ~Scratch() {
         std::error_code ignored;
         fs::remove_all(path, ignored);
     }
 };
+
+void enter_solver_tmp(const fs::path& directory) {
+    fs::current_path(directory);
+    if (::setenv("TMPDIR", directory.c_str(), 1) < 0) throw os_error("set TMPDIR for EBMC");
+}
 
 struct Pipe {
     int fd[2] = {-1, -1};
@@ -85,17 +90,15 @@ void set_memory_limit(std::uint64_t mib) {
     }
 }
 
-[[noreturn]] void worker(const front::Task& task, const fs::path& scratch, Reporter reporter,
+[[noreturn]] void worker(const front::Task& task, const fs::path& scratch, const fs::path& tmp, Reporter reporter,
                          EngineRun operation, Deadline deadline, const std::set<std::string>& skip) {
     int status = 2;
     try {
 #ifndef __APPLE__
         if (::setpgid(0, 0) < 0) throw os_error("isolate task process");
 #endif
-        fs::current_path(scratch); // Keep any scratch files created by IC3 private to this task.
-        // EBMC writes SMT formulas to TMPDIR; they go with the task's scratch directory.
-        if (::setenv("TMPDIR", scratch.c_str(), 1) < 0) throw os_error("set TMPDIR for EBMC");
-        if (!std::freopen("diagnostics.log", "w", stderr) || ::dup2(STDERR_FILENO, STDOUT_FILENO) < 0)
+        enter_solver_tmp(tmp);
+        if (!std::freopen((scratch / "diagnostics.log").c_str(), "w", stderr) || ::dup2(STDERR_FILENO, STDOUT_FILENO) < 0)
             throw os_error("redirect EBMC diagnostics");
         const struct rlimit no_core{0, 0};
         if (::setrlimit(RLIMIT_CORE, &no_core) < 0) throw os_error("disable task core dumps");
@@ -117,6 +120,9 @@ void set_memory_limit(std::uint64_t mib) {
 veval::util::GroupWait run_worker(const front::Task& task, const fs::path& scratch,
                                  Clock::time_point deadline, std::string& events, EngineRun operation,
                                  const std::set<std::string>& skip = {}) {
+    // The supervising process removes TMPDIR and any relative solver dumps
+    // after reaping the group, even when the worker cannot run its destructors.
+    Scratch tmp(scratch, "tmp.XXXXXX");
     Pipe pipe;
     std::string error;
     for (int& fd : pipe.fd)
@@ -128,7 +134,7 @@ veval::util::GroupWait run_worker(const front::Task& task, const fs::path& scrat
     if (pid < 0) throw os_error("start EBMC");
     if (pid == 0) {
         pipe.close_end(0);
-        worker(task, scratch, {pipe.fd[1]}, operation, deadline, skip);
+        worker(task, scratch, tmp.path, {pipe.fd[1]}, operation, deadline, skip);
     }
     pipe.close_end(1);
     const auto wait = veval::util::waitForProofContext(pid, deadline, std::chrono::milliseconds(5),
@@ -295,7 +301,7 @@ fs::path wave_path(const front::Task& task, const std::string& name) {
 }
 
 // Rename publishes a complete trace and replaces an existing file atomically.
-// When TMPDIR is on another filesystem, finish a local copy before the rename.
+// For a cross-filesystem move, finish a local copy before the rename.
 bool publish_file(const fs::path& from, const fs::path& to, Clock::time_point deadline) {
     fs::create_directories(to.parent_path());
     std::error_code error;
@@ -785,6 +791,7 @@ void print_line(const Property& p, Summary& summary, Clock::time_point start) {
 void run_shallow_bmc(Deadline deadline,
                         const std::function<void(const Witness&)>& search, const Witness& observed) {
     if (Clock::now() >= deadline) return;
+    Scratch tmp(fs::current_path(), "tmp.XXXXXX");
     Pipe pipe;
     if (::fcntl(pipe.fd[0], F_SETFL, O_NONBLOCK) < 0) throw os_error("configure witness pipe");
 #ifdef __linux__
@@ -802,6 +809,7 @@ void run_shallow_bmc(Deadline deadline,
             ::prctl(PR_SET_PDEATHSIG, SIGUSR1) < 0 || ::getppid() != parent) ::_exit(2);
 #endif
         try {
+            enter_solver_tmp(tmp.path);
             search([&](std::size_t index) {
                 if (Clock::now() >= deadline) ::_exit(0);
                 ssize_t count;
@@ -858,9 +866,12 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     const auto max_seconds = std::chrono::duration_cast<std::chrono::seconds>(Clock::time_point::max() - start);
     const auto seconds = std::min<std::uint64_t>(task.timeout_seconds.value, max_seconds.count());
     const auto deadline = start + std::chrono::seconds(seconds);
-    TaskProgress progress(task_output_dir(task));
+    const auto output = task_output_dir(task);
+    TaskProgress progress(output);
     check_options(task);
-    Scratch scratch;
+    // Generated Verilog refers to files in scratch. Keep the SALT stem out
+    // of those paths, since it may contain characters such as a newline.
+    Scratch scratch(output.parent_path(), ".crisp-ebmc.XXXXXX");
     std::string error, events;
     if (!veval::util::ensureWaitableChildren(error)) throw std::runtime_error(error);
     // Before SMART and EBMC: illegal RTL stops the task unless rtl-mode relaxed (spec 23).
