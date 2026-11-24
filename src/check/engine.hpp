@@ -25,7 +25,7 @@ enum class EngineRun { validate_reset, solve, solve_with_lasso, solve_primary, v
 // Returns false when the task's undriven policy rejects the design. A solve
 // run leaves out the assertions named in skip (veval decided them).
 bool run_engine(const front::Task&, const std::filesystem::path& scratch, Reporter, EngineRun, Deadline,
-                const std::set<std::string>& skip = {});
+                const std::set<std::string>& skip = {}, const std::filesystem::path& compiled = {});
 
 // Run a witness search in an interruptible process group. Each
 // reported property number is a confirmed witness in a SAT model.

@@ -152,6 +152,17 @@ void positive_cases(const fs::path& dir, std::uint64_t cpus) {
     origin(pair[0].rtl_mode, salt, 6);
     origin(pair[1].rtl_mode, salt, 5);
 
+    write(input, tasks + files);
+    pair = ready(input);
+    require(pair[0].frontend.value == Frontend::native && !pair[0].frontend.source,
+            "the frontend defaults to native");
+    write(input, tasks + "[options]\nfrontend goto-vv\ntask1: frontend native\n" + files);
+    pair = ready(input);
+    require(pair[0].frontend.value == Frontend::native && pair[1].frontend.value == Frontend::goto_vv,
+            "a task can override the common frontend");
+    origin(pair[0].frontend, salt, 6);
+    origin(pair[1].frontend, salt, 5);
+
     // properties PATTERN: the entries for all tasks and for one task merge in file order (5.1.3).
     const auto check_properties = [&](const std::string& settings, const std::vector<std::string>& first,
                                       const std::vector<std::size_t>& first_lines, std::size_t common_line) {

@@ -52,6 +52,48 @@ struct Scratch {
     }
 };
 
+// Keep the object in the run's filesystem without a directory entry. The
+// compiler and engine inherit its descriptor, so even a killed parent leaves
+// no object behind once the last process holding it exits.
+class CompiledVv {
+public:
+    explicit CompiledVv(const fs::path& directory) {
+#ifdef __linux__
+        fd_ = ::open(directory.c_str(), O_TMPFILE | O_RDWR | O_CLOEXEC, 0600);
+        if (fd_ < 0) throw os_error("create temporary goto-vv object");
+#else
+        auto name = (directory / ".goto-vv.XXXXXX").string();
+        fd_ = ::mkstemp(name.data());
+        if (fd_ < 0) throw os_error("create temporary goto-vv object");
+        if (::unlink(name.c_str()) < 0) {
+            const auto error = os_error("unlink temporary goto-vv object");
+            ::close(fd_);
+            throw error;
+        }
+#endif
+        std::string error;
+        if (!veval::util::moveAboveStandardDescriptors(fd_, error, "goto-vv object")) {
+            ::close(fd_);
+            throw std::runtime_error(error);
+        }
+    }
+    ~CompiledVv() { ::close(fd_); }
+    CompiledVv(const CompiledVv&) = delete;
+    CompiledVv& operator=(const CompiledVv&) = delete;
+
+    int fd() const { return fd_; }
+    fs::path path() const {
+#ifdef __linux__
+        return fs::path("/proc/self/fd") / std::to_string(fd_);
+#else
+        return fs::path("/dev/fd") / std::to_string(fd_);
+#endif
+    }
+
+private:
+    int fd_;
+};
+
 void enter_solver_tmp(const fs::path& directory) {
     fs::current_path(directory);
     if (::setenv("TMPDIR", directory.c_str(), 1) < 0) throw os_error("set TMPDIR for EBMC");
@@ -91,7 +133,7 @@ void set_memory_limit(std::uint64_t mib) {
 }
 
 [[noreturn]] void worker(const front::Task& task, const fs::path& scratch, const fs::path& tmp, Reporter reporter,
-                         EngineRun operation, Deadline deadline, const std::set<std::string>& skip) {
+                         EngineRun operation, Deadline deadline, const std::set<std::string>& skip, const fs::path& compiled) {
     int status = 2;
     try {
 #ifndef __APPLE__
@@ -103,7 +145,7 @@ void set_memory_limit(std::uint64_t mib) {
         const struct rlimit no_core{0, 0};
         if (::setrlimit(RLIMIT_CORE, &no_core) < 0) throw os_error("disable task core dumps");
         if (task.ram_mib) set_memory_limit(task.ram_mib->value);
-        if (run_engine(task, scratch, reporter, operation, deadline, skip)) status = 0;
+        if (run_engine(task, scratch, reporter, operation, deadline, skip, compiled)) status = 0;
     } catch (const std::bad_alloc&) {
         std::fputs("EBMC exhausted available memory\n", stderr);
     } catch (const std::exception& error) {
@@ -119,7 +161,7 @@ void set_memory_limit(std::uint64_t mib) {
 
 veval::util::GroupWait run_worker(const front::Task& task, const fs::path& scratch,
                                  Clock::time_point deadline, std::string& events, EngineRun operation,
-                                 const std::set<std::string>& skip = {}) {
+                                 const std::set<std::string>& skip = {}, const fs::path& compiled = {}) {
     // The supervising process removes TMPDIR and any relative solver dumps
     // after reaping the group, even when the worker cannot run its destructors.
     Scratch tmp(scratch, "tmp.XXXXXX");
@@ -134,7 +176,7 @@ veval::util::GroupWait run_worker(const front::Task& task, const fs::path& scrat
     if (pid < 0) throw os_error("start EBMC");
     if (pid == 0) {
         pipe.close_end(0);
-        worker(task, scratch, tmp.path, {pipe.fd[1]}, operation, deadline, skip);
+        worker(task, scratch, tmp.path, {pipe.fd[1]}, operation, deadline, skip, compiled);
     }
     pipe.close_end(1);
     const auto wait = veval::util::waitForProofContext(pid, deadline, std::chrono::milliseconds(5),
@@ -436,6 +478,73 @@ bool check_rtl(const front::Task& task, const fs::path& scratch, Clock::time_poi
               << " strict RTL check failed (slang); write rtl-mode relaxed to skip it\n";
     if (WIFSIGNALED(wait.status)) std::cerr << "crisp: slang terminated by signal " << WTERMSIG(wait.status) << '\n';
     std::cerr << slang_errors(log.str());
+    return false;
+}
+
+bool compile_vv(const front::Task& task, const fs::path& scratch, const CompiledVv& object, Deadline deadline) {
+    const auto executable = component_executable("CRISP_GOTO_VV", "goto-vv", "src/components/hw-cbmc/src/goto-vv/build/goto-vv");
+    const auto& source = *task.frontend.source;
+    const auto failure = [&] {
+        std::cerr << "crisp: " << source.file.string() << ':' << source.line << ": goto-vv failed\n";
+    };
+
+    std::vector<std::string> args{executable.string(), "compile", object.path().string(), "-mfcu"};
+    if (task.top) args.insert(args.end(), {"--top", task.top->value});
+    for (const auto& dir : task.includes) args.insert(args.end(), {"-I", dir.value.string()});
+    for (const auto& define : task.defines)
+        args.insert(args.end(), {"-D", define.value.name + (define.value.value ? "=" + *define.value.value : "")});
+    if (task.rtl_mode.value == front::RtlMode::relaxed)
+        args.insert(args.end(), {"--allow-enum-literal-width-mismatch", "--allow-use-before-declare",
+                                 "--allow-initial-always-ff-drivers"});
+    for (const auto& file : task.files) args.push_back(file.value.string());
+
+    std::vector<char*> argv;
+    for (auto& arg : args) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+
+    Pipe diagnostics;
+    std::string error;
+    for (int& fd : diagnostics.fd)
+        if (!veval::util::moveAboveStandardDescriptors(fd, error, "goto-vv diagnostics")) throw std::runtime_error(error);
+    if (::fcntl(diagnostics.fd[0], F_SETFL, O_NONBLOCK) < 0) throw os_error("configure goto-vv diagnostics");
+    std::cout.flush();
+    std::cerr.flush();
+    const auto pid = veval::util::forkProofContext();
+    if (pid < 0) throw os_error("start goto-vv");
+    if (pid == 0) {
+        diagnostics.close_end(0);
+#ifndef __APPLE__
+        if (::setpgid(0, 0) < 0) ::_exit(126);
+#endif
+        if (::dup2(diagnostics.fd[1], STDERR_FILENO) < 0) ::_exit(126);
+        diagnostics.close_end(1);
+        try {
+            if (::fcntl(object.fd(), F_SETFD, 0) < 0) throw os_error("pass goto-vv object to compiler");
+            if (::setenv("TMPDIR", scratch.c_str(), 1) < 0) throw os_error("set goto-vv TMPDIR");
+            if (task.ram_mib) set_memory_limit(task.ram_mib->value);
+            if (::chdir(task.salt_file.parent_path().c_str()) < 0) throw os_error("enter the .salt directory");
+            ::execv(executable.c_str(), argv.data());
+            std::perror("exec goto-vv");
+        } catch (const std::exception& exception) {
+            std::fprintf(stderr, "%s\n", exception.what());
+        }
+        ::_exit(126);
+    }
+
+    diagnostics.close_end(1);
+    std::string log;
+    const auto drain = [&] { diagnostics.drain(log); };
+    const auto wait = veval::util::waitForProofContext(pid, deadline, std::chrono::milliseconds(5), drain);
+    drain();
+    if (!wait.error.empty()) throw std::runtime_error(wait.error);
+    if (!wait.timedOut && WIFEXITED(wait.status) && WEXITSTATUS(wait.status) == 0) {
+        std::cerr << log;
+        return true;
+    }
+    failure();
+    std::cerr << log;
+    if (wait.timedOut) std::cerr << "goto-vv exceeded the task timeout\n";
+    else if (WIFSIGNALED(wait.status)) std::cerr << "goto-vv terminated by signal " << WTERMSIG(wait.status) << '\n';
     return false;
 }
 
@@ -906,8 +1015,14 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     Scratch scratch(output.parent_path(), ".crisp-ebmc.XXXXXX");
     std::string error, events;
     if (!veval::util::ensureWaitableChildren(error)) throw std::runtime_error(error);
-    // Before SMART and EBMC: illegal RTL stops the task unless rtl-mode relaxed (spec 23).
-    if (task.rtl_mode.value == front::RtlMode::strict && !check_rtl(task, scratch.path, deadline)) {
+    std::optional<CompiledVv> compiled;
+    if (task.frontend.value == front::Frontend::goto_vv) {
+        compiled.emplace(scratch.path);
+        if (!compile_vv(task, scratch.path, *compiled, deadline)) {
+            summary.error = true;
+            return;
+        }
+    } else if (task.rtl_mode.value == front::RtlMode::strict && !check_rtl(task, scratch.path, deadline)) {
         summary.error = true;
         return;
     }
@@ -945,7 +1060,8 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
             mine(task, scratch.path, deadline);
         }
         const auto operation = lasso_json_enabled() ? EngineRun::solve_with_lasso : EngineRun::solve;
-        return run_worker(task, scratch.path, deadline, events, operation, local.decided);
+        return run_worker(task, scratch.path, deadline, events, operation, local.decided,
+                          compiled ? compiled->path() : fs::path{});
     }();
     auto reports = read_events(events);
     const bool reject_undriven = task.undriven.value == front::Undriven::error;

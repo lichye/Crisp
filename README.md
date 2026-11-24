@@ -26,7 +26,7 @@ for sources, `[design]` for the top module, `[options]` for the verification
 mode, and `[resource]` for the timeout. The default timeout is 60 seconds.
 Run `./build/crisp --help` for the command syntax.
 
-The default `rtl-mode strict` checks the design with slang first. `make slang`
+With the default `frontend native`, `rtl-mode strict` checks the design with slang first. `make slang`
 places the executable at `src/components/slang/build/bin/slang`. Set
 `CRISP_SLANG` to use a different executable or select `rtl-mode relaxed` in
 `[options]` to skip the check.
@@ -39,6 +39,32 @@ result, or a task with no assertions.
 
 Run `make test` with Spot's `ltl2tgba` and Yices's `yices-smt2` on `PATH`.
 Word-level SMT tasks (`level word`) use Yices.
+
+### goto-vv frontend
+
+Set `frontend goto-vv` in `[options]` to compile `[files]` in file order as
+one SystemVerilog compilation unit. Crisp passes `[design] include` and
+`define` to goto-vv and reads the result with EBMC. The `[design] reset`
+setting uses the same single-cycle reset path as `frontend native`.
+Use `smart off` and `veval off` with this frontend.
+
+Build goto-vv with a separate Slang v11.0.0 checkout and the PLENA
+compatibility patch, following `src/components/hw-cbmc/COMPILING.md`:
+
+```sh
+make ebmc
+git submodule update --init -- src/components/slang
+git clone --shared src/components/slang build/goto-vv-slang
+git -C build/goto-vv-slang checkout --detach 7ddf4059f79eff508dd486eb42fd650cdf320d52
+git -C build/goto-vv-slang apply "$PWD/src/components/hw-cbmc/src/goto-vv/slang-v11-plena.patch"
+make -C src/components/hw-cbmc/src goto-vv SLANG_SOURCE="$PWD/build/goto-vv-slang" CMAKE_ARGS=-DCMAKE_BUILD_TYPE=Release
+make test-goto-vv
+```
+
+`rtl-mode strict` uses goto-vv's strict checks. `rtl-mode relaxed` permits
+sized enum literal width mismatches, use before declaration and mixed
+`initial`/`always_ff` drivers. Set `CRISP_GOTO_VV` to use a different
+goto-vv executable.
 
 ### SMART
 

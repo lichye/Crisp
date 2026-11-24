@@ -27,6 +27,7 @@ enum class Level { automatic, word, bit };
 enum class ToolUse { on, off, only };
 enum class Undriven { seq, constant, error };
 enum class RtlMode { strict, relaxed };
+enum class Frontend { native, goto_vv };
 enum class Polarity { low, high };
 
 std::string_view spelling(Mode);
@@ -34,6 +35,7 @@ std::string_view spelling(Level);
 std::string_view spelling(ToolUse);
 std::string_view spelling(Undriven);
 std::string_view spelling(RtlMode);
+std::string_view spelling(Frontend);
 
 struct Reset {
     std::string signal;
@@ -64,6 +66,7 @@ struct Task {
     Setting<Undriven> undriven{Undriven::seq, {}};
     // strict: slang checks the RTL before EBMC and SMART (spec 23).
     Setting<RtlMode> rtl_mode{RtlMode::strict, {}};
+    Setting<Frontend> frontend{Frontend::native, {}};
     std::optional<Setting<std::uint64_t>> depth;
     // [options] properties PATTERN, merged in file order; empty selects all assertions.
     std::vector<Setting<std::string>> properties;

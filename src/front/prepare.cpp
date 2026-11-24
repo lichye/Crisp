@@ -83,6 +83,7 @@ void merge(Task& task, const Task& common) {
     inherit(task.veval, common.veval);
     inherit(task.undriven, common.undriven);
     inherit(task.rtl_mode, common.rtl_mode);
+    inherit(task.frontend, common.frontend);
     inherit(task.depth, common.depth);
     inherit(task.thread, common.thread);
     inherit(task.timeout_seconds, common.timeout_seconds);
@@ -102,6 +103,14 @@ void merge(Task& task, const Task& common) {
 }
 
 void check_options(Task& task) {
+    if (task.frontend.value == Frontend::goto_vv) {
+        if (task.smart.value != ToolUse::off)
+            conflict(task.frontend.source, task.smart.source, "frontend goto-vv conflicts with smart " +
+                     std::string(spelling(task.smart.value)) + "; expected smart off");
+        if (task.veval.value != ToolUse::off)
+            conflict(task.frontend.source, task.veval.source, "frontend goto-vv conflicts with veval " +
+                     std::string(spelling(task.veval.value)) + "; expected veval off");
+    }
     const auto mode = task.mode.value;
     // level word uses EBMC's word-level SMT, which only BMC and k-induction
     // have; mode auto currently runs BDDs.

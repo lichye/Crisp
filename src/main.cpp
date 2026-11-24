@@ -34,7 +34,8 @@ void print_task(const Task& task) {
     std::cout << "  options  mode " << spelling(task.mode.value) << ", level " << spelling(task.level.value)
               << ", smart " << spelling(task.smart.value) << ", veval " << spelling(task.veval.value)
               << ", undriven " << spelling(task.undriven.value)
-              << ", rtl-mode " << spelling(task.rtl_mode.value);
+              << ", rtl-mode " << spelling(task.rtl_mode.value)
+              << ", frontend " << spelling(task.frontend.value);
     if (task.depth) std::cout << ", depth " << task.depth->value;
     if (!task.properties.empty()) {
         std::cout << "\n  properties";
