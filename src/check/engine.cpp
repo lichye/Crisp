@@ -155,6 +155,18 @@ void select_properties(const front::Task& task, ebmc_propertiest& properties) {
 class Verilog : public verilog_ebmc_languaget {
 public:
     using verilog_ebmc_languaget::verilog_ebmc_languaget;
+
+    transition_systemt load_compiled(const std::filesystem::path& path, bool hold_undriven,
+                                     const verilog_undriven_reportert& report) {
+        auto object = vv_objectt::read(path.string());
+        object.validate(false);
+        if (object.metadata.get("stage") != "compiled" || !object.metadata.get("reset").empty())
+            throw std::runtime_error("expected a goto-vv compiled object without reset");
+        create_root_module({object.metadata.get("top")}, object.symbols);
+        return create_transition_system(verilog_standardt::SV2023, std::move(object.symbols),
+                                        hold_undriven, report);
+    }
+
     void apply_reset(const front::Task& task, transition_systemt& system) {
         const auto& reset = *task.reset;
         const auto& name = reset.value.signal;
@@ -245,19 +257,23 @@ static std::optional<trans_tracet> reconstruct_counterexample(
 
 namespace {
 void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, EngineRun operation, Deadline deadline,
-           const std::set<std::string>& skip) {
+           const std::set<std::string>& skip, const fs::path& compiled) {
     auto cmd = command_line(task);
     register_language(new_verilog_language);
     format_hooks();
     ui_message_handlert messages(cmd, "Crisp");
     messages.set_verbosity(messaget::M_WARNING);
     Verilog language(cmd, messages);
-    auto system = language.transition_system([&](const auto& undriven) {
+    const auto report_undriven = [&](const auto& undriven) {
         for (const auto& net : undriven)
             reporter.send(0, "undriven", "undriven " + net.name + " at " +
                           id2string(net.location.get_file()) + ':' + id2string(net.location.get_line()));
         if (!undriven.empty() && task.undriven.value == Undriven::error) throw UndrivenError{};
-    });
+    };
+    auto system = compiled.empty()
+        ? language.transition_system(report_undriven)
+        : std::optional{language.load_compiled(compiled, task.undriven.value == front::Undriven::constant,
+                                               report_undriven)};
     if (!system) throw std::runtime_error("EBMC produced no transition system");
     if (task.reset) language.apply_reset(task, *system);
     if (operation == EngineRun::validate_reset) return;
@@ -374,10 +390,10 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
 } // namespace
 
 bool run_engine(const front::Task& task, const std::filesystem::path& scratch, Reporter reporter,
-                EngineRun operation, Deadline deadline, const std::set<std::string>& skip) {
+                EngineRun operation, Deadline deadline, const std::set<std::string>& skip, const fs::path& compiled) {
     try {
         if (operation == EngineRun::lower) lower_for_veval(task, scratch, reporter);
-        else solve(task, scratch, reporter, operation, deadline, skip);
+        else solve(task, scratch, reporter, operation, deadline, skip, compiled);
         return true;
     } catch (const UndrivenError&) {
         return false;

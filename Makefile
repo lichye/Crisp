@@ -11,7 +11,7 @@ VERSION := 0.1.0
 FRONT_OBJECTS := build/front/parse.o build/front/prepare.o
 APP_OBJECTS := build/main.o build/check/run.o $(FRONT_OBJECTS)
 
-.PHONY: crisp ebmc test test-front test-smart deps smart smart-deps veval slang
+.PHONY: crisp ebmc test test-front test-goto-vv test-smart deps smart smart-deps veval slang
 crisp: build/crisp
 
 $(HWCBMC)/src/ebmc/Makefile:
@@ -51,6 +51,9 @@ test: test-front
 		CRISP_ROOT="$(CURDIR)" "$(abspath build/tests/test-witness)"
 	build/tests/test-witness
 	bash tests/cases/run.sh
+
+test-goto-vv: build/crisp
+	bash tests/goto-vv/run.sh
 
 $(SLANG)/CMakeLists.txt:
 	git submodule update --init -- $(SLANG)
