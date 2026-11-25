@@ -68,6 +68,9 @@ std::vector<OptionSpec> buildTable() {
          "output file (default: <top>_assertion.sv next to the input)"},
         {"workdir", "workdir", 0, T::String, std::string(""), "", "DIR",
          "working directory (default: ./smart-work-<top>)"},
+        {"allow_constant_oob_read", "allow-constant-oob-read", 0, T::Bool, false, "", "",
+         "read the out-of-range bits of a compile-time constant select as x "
+         "(passed to every EBMC front-end and check run)"},
         {"keep_work", "keep-work", 0, T::Bool, false, "", "",
          "keep the working directory on success"},
         {"assume", "assume", 0, T::StringList, std::vector<std::string>{}, "",

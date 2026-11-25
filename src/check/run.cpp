@@ -481,6 +481,21 @@ bool check_rtl(const front::Task& task, const fs::path& scratch, Clock::time_poi
     return false;
 }
 
+// Spec 23 section 8: under rtl-mode strict, EBMC's native front end rejects a
+// compile-time out-of-range read with range-oob before building the model.
+// Print Crisp's line, then EBMC's diagnostics. Returns false for any other failure.
+bool constant_oob_rejected(const front::Task& task, const fs::path& diagnostics) {
+    if (task.rtl_mode.value != front::RtlMode::strict) return false;
+    std::ifstream in(diagnostics);
+    std::ostringstream log;
+    log << in.rdbuf();
+    if (log.str().find("range-oob") == std::string::npos) return false;
+    std::cerr << "crisp: " << rtl_mode_location(task)
+              << " constant out-of-range read (EBMC range-oob); write rtl-mode relaxed to read the extra bits as x\n"
+              << log.str();
+    return true;
+}
+
 bool compile_vv(const front::Task& task, const fs::path& scratch, const CompiledVv& object, Deadline deadline) {
     const auto executable = component_executable("CRISP_GOTO_VV", "goto-vv", "src/components/hw-cbmc/src/goto-vv/build/goto-vv");
     const auto& source = *task.frontend.source;
@@ -563,6 +578,8 @@ void mine(const front::Task& task, const fs::path& scratch, Clock::time_point de
     if (task.reset) args.insert(args.end(), {"--reset", task.reset->value.signal +
         (task.reset->value.polarity == front::Polarity::low ? ":0" : ":1")});
     if (task.thread.value) args.insert(args.end(), {"--jobs", std::to_string(task.thread.value)});
+    // Spec 23 section 8: SMART reads the design through EBMC's front end and checks with EBMC.
+    if (task.rtl_mode.value == front::RtlMode::relaxed) args.push_back("--allow-constant-oob-read");
     for (const auto& file : task.files) args.push_back(fs::absolute(file.value).string());
 
     std::vector<char*> argv;
@@ -1033,6 +1050,7 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
         local = run_veval(task, scratch.path, deadline, timeout, progress);
         if (local.failed) {
             summary.error = true;
+            if (constant_oob_rejected(task, scratch.path / "diagnostics.log")) return;
             std::cerr << "crisp: veval could not lower the design\n";
             std::ifstream log(scratch.path / "diagnostics.log");
             if (log.peek() != std::ifstream::traits_type::eof()) std::cerr << log.rdbuf();
@@ -1067,6 +1085,10 @@ void run(const front::Task& task, Summary& summary, bool multiple_tasks) {
     const bool reject_undriven = task.undriven.value == front::Undriven::error;
     const bool rejected = reject_undriven && !reports.undriven.empty();
     const bool failed = rejected || (!wait.timedOut && (!WIFEXITED(wait.status) || WEXITSTATUS(wait.status) != 0));
+    if (failed && reports.properties.empty() && constant_oob_rejected(task, scratch.path / "diagnostics.log")) {
+        summary.error = true;
+        return;
+    }
     for (const auto& detail : reports.undriven) {
         std::cerr << (reject_undriven ? "crisp: error: " : "crisp: warning: ");
         if (multiple_tasks && task.name) std::cerr << '[' << task.name->value << "] ";

@@ -157,6 +157,7 @@ ElaboratedDesign ElaboratedDesign::elaborate(const ElaborateOptions& options) {
 
     impl->argvStrings.push_back("veval");
     if (options.systemVerilog) impl->argvStrings.push_back("--systemverilog");
+    if (options.allowConstantOobRead) impl->argvStrings.push_back("--allow-constant-oob-read");
     impl->argvStrings.push_back("--top");
     impl->argvStrings.push_back(options.top);
     for (const auto& path : options.includePaths) {
@@ -174,7 +175,7 @@ ElaboratedDesign ElaboratedDesign::elaborate(const ElaborateOptions& options) {
 
     const char* spec =
         "(top):(module):I:D:(systemverilog)(reset):(ignore-initial)"
-        "(initial-zero)";
+        "(initial-zero)(allow-constant-oob-read)";
     if (impl->cmdline.parse(static_cast<int>(impl->argv.size()),
                             impl->argv.data(), spec))
         throw std::runtime_error("elaborate: could not set up the frontend");

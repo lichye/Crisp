@@ -26,6 +26,9 @@ struct EbmcResult {
 };
 
 std::string ebmcExecutable();
+// True when SMART runs with --allow-constant-oob-read (SMART_ALLOW_CONSTANT_OOB_READ=1):
+// EBMC reads the out-of-range bits of a compile-time constant select as x.
+bool allowConstantOobRead();
 std::string ebmcCommand(const std::string& designFile, const EbmcOptions& options);
 std::string freshPropertyLabel(const std::string& source,
                                const std::vector<std::string>& extraFiles);

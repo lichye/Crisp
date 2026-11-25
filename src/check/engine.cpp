@@ -93,6 +93,10 @@ cmdlinet command_line(const front::Task& task) {
         args.insert(args.end(), {"-D", define.name + (define.value ? "=" + *define.value : "")});
     }
     if (task.top) args.insert(args.end(), {"--top", task.top->value});
+    // Spec 23 section 8: rtl-mode relaxed reads the out-of-range bits of a
+    // compile-time constant select as x instead of stopping on range-oob.
+    if (task.rtl_mode.value == front::RtlMode::relaxed && task.frontend.value == front::Frontend::native)
+        args.push_back("--allow-constant-oob-read");
     switch (task.mode.value) {
     case Mode::automatic:
     case Mode::bdd: args.push_back("--bdd"); break;
@@ -113,7 +117,8 @@ cmdlinet command_line(const front::Task& task) {
     for (const auto& arg : args) argv.push_back(arg.c_str());
     cmdlinet cmd;
     if (cmd.parse(argv.size(), argv.data(),
-                  "I:D:(systemverilog)(top):(bdd)(new-ic3)(bound):(k-induction)(aig)(yices)(undriven):(finite-prefix)") ||
+                  "I:D:(systemverilog)(top):(bdd)(new-ic3)(bound):(k-induction)(aig)(yices)(undriven):(finite-prefix)"
+                  "(allow-constant-oob-read)") ||
         config.set(cmd))
         throw std::runtime_error("EBMC rejected the task options");
     // In this fork --aig takes precedence over --k-induction and dispatches

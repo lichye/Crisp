@@ -604,6 +604,37 @@ has "crisp: $rtl:9: rtl-mode strict: slang not found at $work/no-slang. Run 'mak
 [[ $(wc -l < err) == 1 ]]
 has 'use_before_declaration.p_follows  passed'
 has '2 tasks, 0 proved, 1 passed, 0 refuted, 0 unknown'
+# Spec 23 section 8: a compile-time out-of-range read. Under strict, slang reports
+# it first; with a slang that accepts the design, EBMC's range-oob stops the task.
+# Under relaxed the bit reads as x, the same as writing x explicitly.
+oob="$root/tests/cases/rtl-oob.salt"
+no_verdict() {
+    if grep -Eq '  (proved|passed|refuted|unknown)  ' out; then
+        cat out err >&2
+        echo "rtl-oob $1: the task was solved" >&2
+        exit 1
+    fi
+    has '1 task, 0 proved, 0 passed, 0 refuted, 0 unknown'
+}
+run 2 rtl-oob strict
+[[ $(head -n 1 err) == "crisp: $oob:2: strict RTL check failed (slang); write rtl-mode relaxed to skip it" ]]
+has "rtl-oob.sv:4:22: error: cannot select range of [3:1] from 'logic[2:0]' [-Wrange-oob]" err
+no_verdict strict
+printf '#!/bin/sh\nexit 0\n' > accept-slang
+chmod +x accept-slang
+status=0
+CRISP_SLANG="$work/accept-slang" timeout 11 "$root/build/crisp" "$oob" strict >out 2>err || status=$?
+[[ $status == 2 ]]
+[[ $(head -n 1 err) == "crisp: $oob:2: constant out-of-range read (EBMC range-oob); write rtl-mode relaxed to read the extra bits as x" ]]
+has 'range-oob: constant packed read [3:1] is outside declared range [2:0]' err
+no_verdict strict
+run 1 rtl-oob relaxed
+has 'rtl-mode relaxed'
+has 'oob.p_high_zero  refuted'
+run 1 rtl-oob explicit_x
+has 'oob_x.p_high_zero  refuted'
+run 1 rtl-oob relaxed_veval
+has 'oob.p_high_zero  refuted'
 # Spec 21. The original verdict and the antecedent diagnostic are independent.
 for mode in bounded word bit induction pdr bdd auto; do
     run 0 vacuity "$mode"

@@ -128,6 +128,8 @@ int main(int argc, char* argv[]) {
             setenv("SMART_CVC5", packaged.c_str(), 1);
     }
     addBundledToolsToPath(self);
+    // Block children and EBMC runs read the switch from the environment.
+    if (options.getBool("allow_constant_oob_read")) setenv("SMART_ALLOW_CONSTANT_OOB_READ", "1", 1);
 
     if (options.checkEnvRequested())
         return static_cast<int>(checkEnvironment(options, self));

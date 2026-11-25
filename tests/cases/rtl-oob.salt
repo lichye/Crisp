@@ -1,0 +1,24 @@
+[tasks]
+strict
+relaxed
+explicit_x
+relaxed_veval
+
+[files]
+strict: rtl-oob.sv
+relaxed: rtl-oob.sv
+explicit_x: rtl-oob-x.sv
+relaxed_veval: rtl-oob.sv
+
+[design]
+strict: top oob
+relaxed: top oob
+explicit_x: top oob_x
+relaxed_veval: top oob
+
+[options]
+mode bmc
+depth 3
+relaxed: rtl-mode relaxed
+relaxed_veval: rtl-mode relaxed
+relaxed_veval: veval on
