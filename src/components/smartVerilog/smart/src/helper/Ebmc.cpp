@@ -98,6 +98,12 @@ std::string ebmcExecutable()
     return SMART_EBMC_PATH;
 }
 
+bool allowConstantOobRead()
+{
+    const auto* value = std::getenv("SMART_ALLOW_CONSTANT_OOB_READ");
+    return value && std::string(value) == "1";
+}
+
 std::string ebmcCommand(const std::string& designFile, const EbmcOptions& options)
 {
     std::ostringstream command;
@@ -109,6 +115,8 @@ std::string ebmcCommand(const std::string& designFile, const EbmcOptions& option
     for(const auto& file : files)
         command << ' ' << shellQuote(file);
     command << " -D FORMAL --systemverilog";
+    if(allowConstantOobRead())
+        command << " --allow-constant-oob-read";
     if(options.unbounded)
         command << " --k-induction";
     else

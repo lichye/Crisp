@@ -1,4 +1,5 @@
 #include "HwcbmcFrontend.h"
+#include "../helper/Ebmc.h"
 
 #include <ebmc/ebmc_error.h>
 #include <ebmc/transition_system.h>
@@ -291,8 +292,10 @@ ModuleInfo parseModuleFile(const std::string& path, const std::string& top,
     CollectingMessageHandler messages;
     cmdlinet command;
     const char* program = "smart";
-    command.parse(1, &program, "I:D:(top):(systemverilog)");
+    command.parse(1, &program, "I:D:(top):(systemverilog)(allow-constant-oob-read)");
     command.set("systemverilog");
+    if (helper::allowConstantOobRead())
+        command.set("allow-constant-oob-read");
     if (!top.empty())
         command.set("top", top);
     command.args = designFiles(path, top, options);

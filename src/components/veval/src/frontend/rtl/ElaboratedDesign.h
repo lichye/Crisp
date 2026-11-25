@@ -30,6 +30,9 @@ struct ElaborateOptions {
     std::vector<std::string> includePaths;
     std::vector<std::string> defines;
     bool systemVerilog = true;
+    // Read the out-of-range bits of a compile-time constant select as x
+    // (EBMC --allow-constant-oob-read) instead of rejecting the design.
+    bool allowConstantOobRead = false;
 
     // 0 (silent) to 10 (everything). The frontend is chatty at 6 and above.
     unsigned verbosity = 1;

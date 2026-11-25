@@ -28,6 +28,7 @@ void lower_for_veval(const front::Task& task, const fs::path& scratch, Reporter 
     frontend::ElaborateOptions options;
     for (const auto& file : task.files) options.files.push_back(fs::absolute(file.value).string());
     options.top = task.top->value;
+    options.allowConstantOobRead = task.rtl_mode.value == front::RtlMode::relaxed;
     for (const auto& dir : task.includes) options.includePaths.push_back(dir.value.string());
     for (const auto& define : task.defines)
         options.defines.push_back(define.value.name + (define.value.value ? "=" + *define.value.value : ""));
