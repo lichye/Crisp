@@ -653,7 +653,14 @@ export REAL_YICES=$(command -v yices-smt2) VACUITY_MARKER="$work/vacuity-called"
 cat > vacuity-solver/yices-smt2 <<'SOLVER'
 #!/usr/bin/env bash
 case "$PWD" in
-    */veval/check*/vacuity/tmp.*) touch "$VACUITY_MARKER" ;;
+    */veval/check*/vacuity/tmp.*)
+        if [[ -n ${LOCAL_PRIMARY_PROGRESS:-} && ! -e $VACUITY_MARKER ]]; then
+            awk -F '\t' '$1 == "local" && $4 == "passed" {print $2}' \
+                "$LOCAL_PRIMARY_PROGRESS"/progress-*.tsv > "$VACUITY_MARKER"
+        else
+            touch "$VACUITY_MARKER"
+        fi
+        ;;
     */veval/check*/tmp.*) exec "$REAL_YICES" "$@" ;;
     *) if [[ ! -f $VACUITY_MARKER ]]; then
            touch "$VACUITY_MARKER"
@@ -674,15 +681,19 @@ for fault in error timeout; do
     [[ $(wc -l < "$(progress_file)") == 2 ]]
 done
 
-# All local primary checks finish before the first auxiliary check times out.
+# Check ordering at the first auxiliary call. The top-level fixture above
+# already exercises deadline expiry.
 for mode in only on; do
+    task="local-fault-$mode"
     sed -e 's@/vacuity.sv$@/vacuity-local.sv@' -e 's/top vacuity/top guarded_top/' \
-        -e '/reset rst high/d' -e "s/properties vacuity.late/veval $mode/" vacuity-fault.salt > local-fault.salt
+        -e '/reset rst high/d' -e "s/properties vacuity.late/veval $mode/" \
+        -e '/^\[resource\]$/,$d' vacuity-fault.salt > "$task.salt"
     rm -f "$VACUITY_MARKER"
-    VACUITY_FAULT=timeout PATH="$work/vacuity-solver:$PATH" timeout 11 \
-        "$root/build/crisp" local-fault.salt >out 2>err
-    [[ -e $VACUITY_MARKER ]]
+    VACUITY_FAULT=error LOCAL_PRIMARY_PROGRESS="$work/crisp-out/$task" \
+        PATH="$work/vacuity-solver:$PATH" timeout 11 "$root/build/crisp" "$task.salt" >out 2>err
+    [[ -f $VACUITY_MARKER && $(wc -l < "$VACUITY_MARKER") == 4 ]]
     for name in overlap next_cycle boolean_arrow captured; do
+        grep -Fxq "guarded_top.child.$name" "$VACUITY_MARKER"
         has_vacuity "guarded_top.child.$name" passed unchecked
     done
     has '1 task, 0 proved, 4 passed, 0 refuted, 0 unknown; vacuity: 0 triggered, 0 not triggered, 0 never triggered, 4 unchecked'
