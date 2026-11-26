@@ -117,6 +117,74 @@ SALT
     run 0 relaxed.salt
 done
 
+# Use the EBMC gate fixture and compare the same compiler output through
+# Crisp's library path and EBMC's standalone reader.
+fixture="$root/src/components/hw-cbmc/src/goto-vv/tests/clock-gate"
+goto_vv=${CRISP_GOTO_VV:-$root/build/goto-vv}
+if [[ -z ${CRISP_GOTO_VV:-} && ! -f $goto_vv ]]; then
+    goto_vv="$root/src/components/hw-cbmc/src/goto-vv/build/goto-vv"
+fi
+ebmc="$root/src/components/hw-cbmc/src/ebmc/ebmc"
+mkdir gate
+cp -- "$fixture"/{coral-reset.sv,gated.sv,gated.contract,start.txt} gate/
+cat > gate/start.salt <<'SALT'
+[options]
+frontend goto-vv
+clock-gate-contract gated.contract start-reset
+mode bmc
+level word
+depth 8
+properties gated.p_initial_two
+[files]
+coral-reset.sv
+gated.sv
+[design]
+top gated
+define SYNTHESIS
+define USE_GENERIC
+SALT
+sed 's/ start-reset$//' gate/start.salt > gate/no-start.salt
+
+cat > capture-compiler <<'SH'
+#!/bin/sh
+set -eu
+"$CRISP_TEST_GOTO_VV" "$@"
+cp -- "$2" "$CRISP_TEST_CAPTURE"
+SH
+chmod +x capture-compiler
+CRISP_GOTO_VV="$work/capture-compiler" CRISP_TEST_GOTO_VV="$goto_vv" \
+    CRISP_TEST_CAPTURE="$work/gate/start.object" run 0 gate/start.salt
+grep -Fq 'clock-gate-contract gated.contract start-reset' out
+grep -E '^  gated\.p_initial_two  passed .*bmc depth 8.*  triggered$' out
+CRISP_GOTO_VV="$work/capture-compiler" CRISP_TEST_GOTO_VV="$goto_vv" \
+    CRISP_TEST_CAPTURE="$work/gate/no-start.object" run 1 gate/no-start.salt
+grep -Fq 'clock-gate-contract gated.contract, depth 8' out
+grep -E '^  gated\.p_initial_two  refuted .*  triggered$' out
+
+sed '/^clock-gate-contract /d' gate/start.salt > gate/no-contract.salt
+run 2 gate/no-contract.salt
+grep -Fq 'multiple clock domains' err
+sed 's/frontend goto-vv/frontend native/' gate/start.salt > gate/native.salt
+run 2 gate/native.salt
+grep -Fq ':3: [options] clock-gate-contract requires frontend goto-vv' err
+sed '/^top gated/a reset rst_ni low' gate/start.salt > gate/reset.salt
+run 2 gate/reset.salt
+grep -Fq ':13: [options] clock-gate-contract conflicts with reset' err
+sed 's/start-reset$/wrong/' gate/start.salt > gate/wrong-option.salt
+run 2 gate/wrong-option.salt
+grep -Fq ':3: [options] clock-gate-contract: expected clock-gate-contract FILE [start-reset]' err
+
+: > gate/no-start.txt
+"$goto_vv" constrain gate/start.object gate/start.txt gate/start.vv
+"$goto_vv" constrain gate/no-start.object gate/no-start.txt gate/no-start.vv
+"$ebmc" --yices --bound 8 --property gated.p_initial_two gate/start.vv > out 2> err
+grep -E '^\[gated\.p_initial_two\].*: PROVED up to bound 8$' out
+status=0
+"$ebmc" --yices --bound 8 --property gated.p_initial_two gate/no-start.vv > out 2> err || status=$?
+[[ $status == 10 ]]
+grep -E '^\[gated\.p_initial_two\].*: REFUTED$' out
+rm -- gate/{start,no-start}.vv
+
 # Interrupt the compiler after it has written the output. Neither timeout nor
 # a killed compiler should leave the object or start a check.
 cat > interrupted-compiler <<'SH'

@@ -13,6 +13,7 @@
 #include <util/config.h>
 #include <util/exception_utils.h>
 #include <util/ui_message.h>
+#include <verilog/clock_gate_contract.h>
 #include <verilog/verilog_bits.h>
 #include <verilog/verilog_ebmc_language.h>
 #include <verilog/verilog_language.h>
@@ -161,15 +162,19 @@ class Verilog : public verilog_ebmc_languaget {
 public:
     using verilog_ebmc_languaget::verilog_ebmc_languaget;
 
-    transition_systemt load_compiled(const std::filesystem::path& path, bool hold_undriven,
+    transition_systemt load_compiled(const std::filesystem::path& path, const front::Task& task,
                                      const verilog_undriven_reportert& report) {
         auto object = vv_objectt::read(path.string());
         object.validate(false);
-        if (object.metadata.get("stage") != "compiled" || !object.metadata.get("reset").empty())
-            throw std::runtime_error("expected a goto-vv compiled object without reset");
+        const auto* stage = task.clock_gate_contract ? "clock-gate-compiled" : "compiled";
+        if (object.metadata.get("stage") != stage || !object.metadata.get("reset").empty())
+            throw std::runtime_error(std::string("expected a goto-vv ") + stage + " object without reset");
         create_root_module({object.metadata.get("top")}, object.symbols);
-        return create_transition_system(verilog_standardt::SV2023, std::move(object.symbols),
-                                        hold_undriven, report);
+        auto system = create_transition_system(verilog_standardt::SV2023, std::move(object.symbols),
+                                               task.undriven.value == front::Undriven::constant, report);
+        if (task.clock_gate_contract)
+            ebmc::apply_clock_gate_contract(object, system, task.clock_gate_contract->value.start_reset);
+        return system;
     }
 
     void apply_reset(const front::Task& task, transition_systemt& system) {
@@ -277,8 +282,7 @@ void solve(const front::Task& task, const fs::path& scratch, Reporter reporter, 
     };
     auto system = compiled.empty()
         ? language.transition_system(report_undriven)
-        : std::optional{language.load_compiled(compiled, task.undriven.value == front::Undriven::constant,
-                                               report_undriven)};
+        : std::optional{language.load_compiled(compiled, task, report_undriven)};
     if (!system) throw std::runtime_error("EBMC produced no transition system");
     if (task.reset) language.apply_reset(task, *system);
     if (operation == EngineRun::validate_reset) return;

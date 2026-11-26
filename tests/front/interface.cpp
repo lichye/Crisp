@@ -163,6 +163,17 @@ void positive_cases(const fs::path& dir, std::uint64_t cpus) {
     origin(pair[0].frontend, salt, 6);
     origin(pair[1].frontend, salt, 5);
 
+    write(input, tasks + "[options]\nfrontend goto-vv\nclock-gate-contract ./base.contract start-reset\n"
+          "task1: clock-gate-contract task.contract\n" + files);
+    pair = ready(input);
+    const auto& first_contract = pair[0].clock_gate_contract.value();
+    const auto& second_contract = pair[1].clock_gate_contract.value();
+    require(first_contract.value.file == "task.contract" && !first_contract.value.start_reset &&
+            second_contract.value.file == "./base.contract" && second_contract.value.start_reset,
+            "a task can override the common contract and its start-reset setting");
+    origin(first_contract, salt, 7);
+    origin(second_contract, salt, 6);
+
     // properties PATTERN: the entries for all tasks and for one task merge in file order (5.1.3).
     const auto check_properties = [&](const std::string& settings, const std::vector<std::string>& first,
                                       const std::vector<std::size_t>& first_lines, std::size_t common_line) {

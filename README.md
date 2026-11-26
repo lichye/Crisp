@@ -48,6 +48,11 @@ one SystemVerilog compilation unit. Crisp passes `[design] include` and
 setting uses the same single-cycle reset path as `frontend native`.
 Use `smart off` and `veval off` with this frontend.
 
+Use `clock-gate-contract FILE [start-reset]` in `[options]` with
+`frontend goto-vv`. Resolve `FILE` relative to the `.salt` file and omit
+`[design] reset` when using a contract. Add `start-reset` to require reset
+in the initial state.
+
 Build goto-vv with a separate Slang v11.0.0 checkout and the PLENA
 compatibility patch, following `src/components/hw-cbmc/COMPILING.md`:
 
