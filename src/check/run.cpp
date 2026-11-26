@@ -505,6 +505,8 @@ bool compile_vv(const front::Task& task, const fs::path& scratch, const Compiled
 
     std::vector<std::string> args{executable.string(), "compile", object.path().string(), "-mfcu"};
     if (task.top) args.insert(args.end(), {"--top", task.top->value});
+    if (task.clock_gate_contract)
+        args.insert(args.end(), {"--clock-gate-contract", task.clock_gate_contract->value.file.string()});
     for (const auto& dir : task.includes) args.insert(args.end(), {"-I", dir.value.string()});
     for (const auto& define : task.defines)
         args.insert(args.end(), {"-D", define.value.name + (define.value.value ? "=" + *define.value.value : "")});

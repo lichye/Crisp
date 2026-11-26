@@ -41,6 +41,10 @@ struct Reset {
     std::string signal;
     Polarity polarity;
 };
+struct ClockGateContract {
+    std::filesystem::path file;
+    bool start_reset;
+};
 struct Define {
     std::string name;
     std::optional<std::string> value;
@@ -67,6 +71,7 @@ struct Task {
     // strict: slang checks the RTL before EBMC and SMART (spec 23).
     Setting<RtlMode> rtl_mode{RtlMode::strict, {}};
     Setting<Frontend> frontend{Frontend::native, {}};
+    std::optional<Setting<ClockGateContract>> clock_gate_contract;
     std::optional<Setting<std::uint64_t>> depth;
     // [options] properties PATTERN, merged in file order; empty selects all assertions.
     std::vector<Setting<std::string>> properties;

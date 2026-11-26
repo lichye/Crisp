@@ -84,6 +84,7 @@ void merge(Task& task, const Task& common) {
     inherit(task.undriven, common.undriven);
     inherit(task.rtl_mode, common.rtl_mode);
     inherit(task.frontend, common.frontend);
+    inherit(task.clock_gate_contract, common.clock_gate_contract);
     inherit(task.depth, common.depth);
     inherit(task.thread, common.thread);
     inherit(task.timeout_seconds, common.timeout_seconds);
@@ -103,6 +104,13 @@ void merge(Task& task, const Task& common) {
 }
 
 void check_options(Task& task) {
+    if (task.clock_gate_contract) {
+        const auto& source = task.clock_gate_contract->source;
+        if (task.frontend.value != Frontend::goto_vv)
+            conflict(source, task.frontend.source, "clock-gate-contract requires frontend goto-vv");
+        if (task.reset)
+            conflict(source, task.reset->source, "clock-gate-contract conflicts with reset");
+    }
     if (task.frontend.value == Frontend::goto_vv) {
         if (task.smart.value != ToolUse::off)
             conflict(task.frontend.source, task.smart.source, "frontend goto-vv conflicts with smart " +

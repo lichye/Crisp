@@ -203,11 +203,20 @@ void read_setting(const SettingLine& line, Task& scope) {
         else if (key == "undriven") line.set(scope.undriven, choice<Undriven>(line, undriven_names));
         else if (key == "rtl-mode") line.set(scope.rtl_mode, choice<RtlMode>(line, rtl_mode_names));
         else if (key == "frontend") line.set(scope.frontend, choice<Frontend>(line, frontend_names));
+        else if (key == "clock-gate-contract") {
+            const auto& w = line.words;
+            if (w.size() != 2 && (w.size() != 3 || w[2] != "start-reset"))
+                line.fail("expected clock-gate-contract FILE [start-reset]");
+            if (w[1].find('\0') != std::string::npos)
+                line.fail("expected a contract path without NUL bytes");
+            line.set(scope.clock_gate_contract, ClockGateContract{w[1], w.size() == 3});
+        }
         else if (key == "properties") {
             line.expect(2, "one PATTERN without whitespace");
             scope.properties.push_back({line.words[1], line.source});
         }
-        else line.fail("unknown key; expected mode, level, smart, veval, depth, undriven, properties, rtl-mode, frontend");
+        else line.fail("unknown key; expected mode, level, smart, veval, depth, undriven, properties, "
+                       "rtl-mode, frontend, clock-gate-contract");
     } else {
         read_design(line, scope);
     }

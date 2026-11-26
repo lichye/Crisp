@@ -36,6 +36,11 @@ void print_task(const Task& task) {
               << ", undriven " << spelling(task.undriven.value)
               << ", rtl-mode " << spelling(task.rtl_mode.value)
               << ", frontend " << spelling(task.frontend.value);
+    if (task.clock_gate_contract) {
+        const auto& contract = task.clock_gate_contract->value;
+        std::cout << ", clock-gate-contract " << contract.file.string();
+        if (contract.start_reset) std::cout << " start-reset";
+    }
     if (task.depth) std::cout << ", depth " << task.depth->value;
     if (!task.properties.empty()) {
         std::cout << "\n  properties";
